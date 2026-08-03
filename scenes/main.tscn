@@ -1,0 +1,63 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/PlayerShip.cs" id="1"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 1
+background_color = Color(0.01, 0.01, 0.03, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.05, 0.05, 0.08, 1)
+ambient_light_energy = 1.0
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_1"]
+radius = 1.0
+height = 4.0
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_1"]
+radius = 1.0
+height = 4.0
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1"]
+albedo_color = Color(0.7, 0.75, 0.8, 1)
+metallic = 0.6
+roughness = 0.3
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-45, 30, 0)
+light_energy = 1.2
+
+[node name="PlayerShip" type="RigidBody3D" parent="."]
+mass = 1000.0
+gravity_scale = 0.0
+can_sleep = false
+script = ExtResource("1")
+debug_label_path = NodePath("../HUD/DebugLabel")
+
+[node name="ShipMesh" type="MeshInstance3D" parent="PlayerShip"]
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("CapsuleMesh_1")
+surface_material_override/0 = SubResource("StandardMaterial3D_1")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerShip"]
+rotation_degrees = Vector3(90, 0, 0)
+shape = SubResource("CapsuleShape3D_1")
+
+[node name="ChaseCamera" type="Camera3D" parent="PlayerShip"]
+position = Vector3(0, 2, 8)
+rotation_degrees = Vector3(-10, 0, 0)
+current = true
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="DebugLabel" type="Label" parent="HUD"]
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 420.0
+offset_bottom = 120.0
+theme_override_font_sizes/font_size = 18
+text = "Velocity: 0.0 m/s\nDampeners: ON (X to toggle)"
