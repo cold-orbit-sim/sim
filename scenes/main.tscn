@@ -1,6 +1,8 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://scripts/PlayerShip.cs" id="1"]
+[ext_resource type="Script" path="res://scripts/StarfieldSky.cs" id="2"]
+[ext_resource type="Script" path="res://scripts/DebrisField.cs" id="3"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -26,17 +28,22 @@ roughness = 0.3
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_1")
+script = ExtResource("2")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 rotation_degrees = Vector3(-45, 30, 0)
 light_energy = 1.2
+
+[node name="DebrisField" type="MultiMeshInstance3D" parent="."]
+script = ExtResource("3")
 
 [node name="PlayerShip" type="RigidBody3D" parent="."]
 mass = 1000.0
 gravity_scale = 0.0
 can_sleep = false
 script = ExtResource("1")
-debug_label_path = NodePath("../HUD/DebugLabel")
+DebugLabelPath = NodePath("../HUD/DebugLabel")
+HelpLabelPath = NodePath("../HUD/HelpLabel")
 
 [node name="ShipMesh" type="MeshInstance3D" parent="PlayerShip"]
 rotation_degrees = Vector3(90, 0, 0)
@@ -58,6 +65,15 @@ current = true
 offset_left = 16.0
 offset_top = 16.0
 offset_right = 420.0
-offset_bottom = 120.0
+offset_bottom = 220.0
 theme_override_font_sizes/font_size = 18
-text = "Velocity: 0.0 m/s\nDampeners: ON (X to toggle)"
+text = "Velocity: 0.0 m/s\nDampeners: ON (X to toggle)\nRCS: OFF (V to toggle)\nMix: Economy (1=Economy, 2=Power)\nTemp: 0C\n? for controls"
+
+[node name="HelpLabel" type="Label" parent="HUD"]
+visible = false
+offset_left = 16.0
+offset_top = 232.0
+offset_right = 460.0
+offset_bottom = 460.0
+theme_override_font_sizes/font_size = 18
+text = "Controls"

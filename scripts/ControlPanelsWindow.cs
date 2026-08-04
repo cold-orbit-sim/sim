@@ -1,0 +1,586 @@
+using System;
+using System.Text.Json;
+using Godot;
+using MQTTnet.Protocol;
+
+namespace ColdOrbit.SimCore;
+
+// Basic, functional stand-in for the 12 physical console panels (master
+// plan §7), in a separate OS window, before the hardware exists. This is
+// about interactive placeholders, not visual fidelity -- it deliberately
+// does NOT attempt to match the eventual physical reach-zone layout
+// (§3.7); that's deferred until the physical console geometry is settled.
+//
+// Built programmatically (one method per panel) rather than hand-authored
+// node-by-node in the .tscn, since the vast majority of this is repetitive
+// control layout across 12 panels, not something worth hand-placing yet.
+// The TabContainer organization is itself an interim choice -- expect it
+// to get replaced by per-panel windows or a §3.7 layout later.
+//
+// Every panel except Propulsion is purely visual: interactive (clickable,
+// toggles flip, sliders move) but not wired to any sim state, because no
+// sim logic exists yet for turrets/missiles/comms/etc. Propulsion is the
+// one panel with real state to wire to (PlayerShip via SimBus).
+//
+// Propulsion and FTL also publish to coldorbit/input/... (batch 6
+// follow-up) whenever their controls are actually operated -- standing in
+// for what the real physical panels' own MCUs would broadcast once they
+// exist. See PublishPropulsionCommand/PublishFtlCommand/PublishFtlAction
+// for the topic/retain/QoS reasoning, which mirrors the
+// coldorbit/output/... conventions batch 6 established. Deliberately
+// fires only from genuine UI interaction (the signal handlers below), not
+// from SyncPropulsionFromBus/SyncFtlFromBus's NoSignal syncing -- a real
+// panel only broadcasts when its own control moves, not when it hears the
+// sim's state changed via a different input path (the keyboard
+// placeholder). PlayerShip does not subscribe to these -- still out of
+// scope per the batch 6 handover, this is publish-only.
+public partial class ControlPanelsWindow : Window
+{
+    private static readonly Color LedOff = new Color(0.2f, 0.2f, 0.2f);
+    private static readonly Color LedGreen = new Color(0.2f, 0.9f, 0.3f);
+    private static readonly Color LedOrange = new Color(1.0f, 0.6f, 0.0f);
+
+    private ProgressBar _engineTempGauge;
+    private Label _overheatLabel;
+    private HSlider _mixSlider;
+    private CheckButton _rcsToggle;
+    private CheckButton _dampenerToggle;
+
+    private static readonly string[] TouchscreenModeNames =
+        { "Engineering", "Propulsion", "FTL", "Turrets", "Missiles", "Comms", "Hardpoints" };
+
+    private Button[] _touchscreenButtons;
+    private ColorRect[] _touchscreenLeds;
+    private string _lastTouchscreenMode;
+
+    private CheckButton _ftlArmToggle;
+    private Button _ftlDestPrev;
+    private Button _ftlDestNext;
+    private Label _ftlDestLabel;
+    private Button _ftlVectorButton;
+    private ColorRect _ftlVectorLed;
+    private Button _ftlJumpButton;
+    private ColorRect _ftlJumpLed;
+    private Label _ftlStatusLabel;
+    private double _ledBlinkClock; // seconds, drives VECTOR/JUMP LED flash
+
+    public override void _Ready()
+    {
+        Title = "Cold Orbit — Control Panels";
+        Size = new Vector2I(1000, 700);
+
+        var tabs = new TabContainer();
+        tabs.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        AddChild(tabs);
+
+        AddTab(tabs, "Turrets", BuildTurretsTab());
+        AddTab(tabs, "Missiles", BuildMissilesTab());
+        AddTab(tabs, "Cameras", BuildCamerasTab());
+        AddTab(tabs, "Touchscreen", BuildTouchscreenModeTab());
+        AddTab(tabs, "Comms", BuildCommsTab());
+        AddTab(tabs, "FTL", BuildFtlTab());
+        AddTab(tabs, "Propulsion", BuildPropulsionTab());
+        AddTab(tabs, "Engineering", BuildEngineeringTab());
+        for (int i = 1; i <= 4; i++)
+        {
+            AddTab(tabs, $"Hardpoint {i}", BuildHardpointTab(i));
+        }
+
+        Show();
+    }
+
+    public override void _Process(double delta)
+    {
+        SyncPropulsionFromBus();
+        SyncFtlFromBus(delta);
+        SyncTouchscreenFromBus();
+    }
+
+    // --- Layout helpers -----------------------------------------------
+
+    private static void AddTab(TabContainer tabs, string title, Control content)
+    {
+        var margin = new MarginContainer { Name = title };
+        margin.AddThemeConstantOverride("margin_left", 12);
+        margin.AddThemeConstantOverride("margin_top", 12);
+        margin.AddThemeConstantOverride("margin_right", 12);
+        margin.AddThemeConstantOverride("margin_bottom", 12);
+
+        var scroll = new ScrollContainer();
+        margin.AddChild(scroll);
+        scroll.AddChild(content);
+
+        tabs.AddChild(margin);
+    }
+
+    private static HBoxContainer Row(params Control[] children)
+    {
+        var row = new HBoxContainer();
+        foreach (var c in children) row.AddChild(c);
+        return row;
+    }
+
+    private static Control Labeled(string text, Control control)
+    {
+        var row = new HBoxContainer();
+        row.AddChild(new Label { Text = text, CustomMinimumSize = new Vector2(180, 0) });
+        row.AddChild(control);
+        return row;
+    }
+
+    private static ColorRect MakeLed(Color color)
+    {
+        return new ColorRect { Color = color, CustomMinimumSize = new Vector2(20, 20) };
+    }
+
+    private static ProgressBar MakeGauge(float initial = 100f)
+    {
+        return new ProgressBar { MinValue = 0, MaxValue = 100, Value = initial, CustomMinimumSize = new Vector2(150, 0) };
+    }
+
+    private static HSlider MakeKnob(double min = 0, double max = 100, double value = 50)
+    {
+        return new HSlider { MinValue = min, MaxValue = max, Value = value, CustomMinimumSize = new Vector2(150, 0) };
+    }
+
+    private static Control MakeCycleSelect(string[] options)
+    {
+        var container = new HBoxContainer();
+        var index = 0;
+        var prev = new Button { Text = "◀" };
+        var label = new Label
+        {
+            Text = options[0],
+            CustomMinimumSize = new Vector2(120, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        var next = new Button { Text = "▶" };
+
+        prev.Pressed += () =>
+        {
+            index = (index - 1 + options.Length) % options.Length;
+            label.Text = options[index];
+        };
+        next.Pressed += () =>
+        {
+            index = (index + 1) % options.Length;
+            label.Text = options[index];
+        };
+
+        container.AddChild(prev);
+        container.AddChild(label);
+        container.AddChild(next);
+        return container;
+    }
+
+    // --- Panel builders -------------------------------------------------
+    // No backing sim logic yet, except BuildPropulsionTab.
+
+    private Control BuildTurretsTab()
+    {
+        var root = new VBoxContainer();
+        for (int i = 1; i <= 2; i++)
+        {
+            root.AddChild(new Label { Text = $"Turret {i}" });
+            root.AddChild(Labeled("Arm", new CheckButton()));
+            root.AddChild(Labeled("Ammo", MakeGauge()));
+            root.AddChild(Labeled("Target Select", MakeCycleSelect(new[] { "None", "Tgt A", "Tgt B", "Tgt C" })));
+            root.AddChild(Labeled("Lock", MakeLed(LedOff)));
+            root.AddChild(Labeled("Reload", Row(new Button { Text = "Reload" }, MakeLed(LedOff))));
+            root.AddChild(new HSeparator());
+        }
+        root.AddChild(Labeled("Fire Mode (Single/Burst)", new CheckButton()));
+        return root;
+    }
+
+    private Control BuildMissilesTab()
+    {
+        var root = new VBoxContainer();
+        for (int i = 1; i <= 2; i++)
+        {
+            root.AddChild(new Label { Text = $"Missile Bay {i}" });
+            root.AddChild(Labeled("Arm", new CheckButton()));
+            // "4-position select" -- ammo type names are placeholders, not
+            // from the master plan (it specifies the control is 4-position,
+            // not what the 4 options are).
+            root.AddChild(Labeled("Ammo Type", MakeCycleSelect(new[] { "HE", "AP", "Flak", "EMP" })));
+            root.AddChild(Labeled("Load", new Button { Text = "Load" }));
+            root.AddChild(Labeled("Target Select", MakeCycleSelect(new[] { "None", "Tgt A", "Tgt B", "Tgt C" })));
+            root.AddChild(Labeled("Lock", MakeLed(LedOff)));
+            root.AddChild(Labeled("Fire", new Button { Text = "Fire" }));
+            root.AddChild(new HSeparator());
+        }
+        return root;
+    }
+
+    private Control BuildCamerasTab()
+    {
+        var root = new VBoxContainer();
+        var group = new ButtonGroup();
+        string[] names = { "Forward", "Aft", "External / Chase", "Dorsal", "Ventral", "Docking", "Damage Inspection" };
+        foreach (var name in names)
+        {
+            var led = MakeLed(LedOff);
+            var button = new Button { Text = name, ToggleMode = true, ButtonGroup = group };
+            button.Toggled += pressed => led.Color = pressed ? LedGreen : LedOff;
+            root.AddChild(Row(button, led));
+        }
+        return root;
+    }
+
+    private Control BuildTouchscreenModeTab()
+    {
+        var root = new VBoxContainer();
+        var group = new ButtonGroup();
+        _touchscreenButtons = new Button[TouchscreenModeNames.Length];
+        _touchscreenLeds = new ColorRect[TouchscreenModeNames.Length];
+
+        for (int i = 0; i < TouchscreenModeNames.Length; i++)
+        {
+            var modeKey = TouchscreenModeNames[i].ToLowerInvariant();
+            var topic = $"coldorbit/input/touchscreen/{modeKey}";
+
+            var led = MakeLed(LedOff);
+            var button = new Button { Text = TouchscreenModeNames[i], ToggleMode = true, ButtonGroup = group };
+            button.ButtonDown += () => PublishButtonState(topic, 1);
+            button.ButtonUp += () => PublishButtonState(topic, 0);
+
+            _touchscreenButtons[i] = button;
+            _touchscreenLeds[i] = led;
+            root.AddChild(Row(button, led));
+        }
+        return root;
+    }
+
+    private Control BuildCommsTab()
+    {
+        var root = new VBoxContainer();
+        root.AddChild(Row(new Button { Text = "Master Warn/Caution" }, MakeLed(LedOff)));
+        root.AddChild(Labeled("Volume", MakeKnob(0, 100, 50)));
+        root.AddChild(Labeled("Clock", new Label { Text = "00:00:00" }));
+        root.AddChild(Labeled("Comms LCD", new Label
+        {
+            Text = "-- no message --",
+            CustomMinimumSize = new Vector2(300, 60),
+        }));
+        root.AddChild(Labeled("New Message", MakeLed(LedOff)));
+        root.AddChild(Row(new Button { Text = "Up" }, new Button { Text = "Down" }, new Button { Text = "Select" }));
+        return root;
+    }
+
+    private Control BuildFtlTab()
+    {
+        var root = new VBoxContainer();
+
+        _ftlArmToggle = new CheckButton { Text = "Arm" };
+        _ftlArmToggle.Toggled += pressed =>
+        {
+            SimBus.Instance.Ftl.Armed = pressed;
+            PublishFtlCommand();
+        };
+        root.AddChild(_ftlArmToggle);
+
+        _ftlDestLabel = new Label
+        {
+            Text = SimBus.FtlState.Destinations[0],
+            CustomMinimumSize = new Vector2(120, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _ftlDestPrev = new Button { Text = "◀" };
+        _ftlDestNext = new Button { Text = "▶" };
+        _ftlDestPrev.Pressed += () => { CycleFtlDestination(-1); PublishFtlCommand(); };
+        _ftlDestNext.Pressed += () => { CycleFtlDestination(1); PublishFtlCommand(); };
+        root.AddChild(Labeled("Destination Select", Row(_ftlDestPrev, _ftlDestLabel, _ftlDestNext)));
+
+        // VECTOR/JUMP are momentary presses (not toggles) -- each one sets a
+        // one-shot request flag on SimBus.Ftl that PlayerShip consumes on the
+        // next physics frame. LED color/blink is driven entirely by the FTL
+        // phase telemetry in SyncFtlFromBus, not by the button's own state.
+        _ftlVectorLed = MakeLed(LedOff);
+        _ftlVectorButton = new Button { Text = "VECTOR" };
+        _ftlVectorButton.ButtonDown += () =>
+        {
+            SimBus.Instance.Ftl.VectorRequested = true;
+            PublishButtonState("coldorbit/input/ftl/vector", 1);
+        };
+        _ftlVectorButton.ButtonUp += () => PublishButtonState("coldorbit/input/ftl/vector", 0);
+        root.AddChild(Row(_ftlVectorButton, _ftlVectorLed));
+
+        _ftlJumpLed = MakeLed(LedOff);
+        _ftlJumpButton = new Button { Text = "JUMP" };
+        _ftlJumpButton.ButtonDown += () =>
+        {
+            SimBus.Instance.Ftl.JumpRequested = true;
+            PublishButtonState("coldorbit/input/ftl/jump", 1);
+        };
+        _ftlJumpButton.ButtonUp += () => PublishButtonState("coldorbit/input/ftl/jump", 0);
+        root.AddChild(Row(_ftlJumpButton, _ftlJumpLed));
+
+        _ftlStatusLabel = new Label { Text = "" };
+        root.AddChild(_ftlStatusLabel);
+
+        return root;
+    }
+
+    private static void CycleFtlDestination(int direction)
+    {
+        var ftl = SimBus.Instance.Ftl;
+        int count = SimBus.FtlState.Destinations.Length;
+        ftl.DestinationIndex = (ftl.DestinationIndex + direction + count) % count;
+    }
+
+    // --- coldorbit/input/... publishing (stand-in for real panel MCUs) --
+
+    // Discrete panel positions (mix knob, RCS/dampener toggles): retained +
+    // QoS 2 -- a subscriber connecting fresh sees the current switch position
+    // immediately, and exactly-once delivery means no duplicate state flips.
+    private static void PublishPropulsionCommand()
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        var p = SimBus.Instance.Propulsion;
+        string payload = JsonSerializer.Serialize(new
+        {
+            mix = p.MixTarget,
+            rcs_enabled = p.RcsEnabled,
+            dampeners_enabled = p.DampenersEnabled,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish("coldorbit/input/propulsion/command", payload, MqttQualityOfServiceLevel.ExactlyOnce, retain: true);
+    }
+
+    private static void PublishFtlCommand()
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        var ftl = SimBus.Instance.Ftl;
+        string payload = JsonSerializer.Serialize(new
+        {
+            armed = ftl.Armed,
+            destination_index = ftl.DestinationIndex,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish("coldorbit/input/ftl/command", payload, MqttQualityOfServiceLevel.ExactlyOnce, retain: true);
+    }
+
+    // Momentary button press/release: per-topic (topic is the event, not a
+    // payload field), QoS 2 for uniformity and to prevent duplicate deliveries
+    // on stateful inputs (e.g. cycle selects). NOT retained -- a stale
+    // "button held" on the broker after the publisher exits would be wrong.
+    private static void PublishButtonState(string topic, int state)
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        string payload = JsonSerializer.Serialize(new
+        {
+            state,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish(topic, payload, MqttQualityOfServiceLevel.ExactlyOnce, retain: false);
+    }
+
+    private Control BuildPropulsionTab()
+    {
+        var root = new VBoxContainer();
+
+        // Arm / Ignition / Reverse Thrust / Emergency Cutoff have no
+        // distinct backing state in PlayerShip.cs -- there's no separate
+        // armed gate, ignition sequence, reverse-thrust mode distinct from
+        // holding S, or cutoff distinct from the overheat cutoff. Visual
+        // only; flagged in HANDOVER-BACK.md.
+        root.AddChild(Labeled("Arm", new CheckButton()));
+        root.AddChild(new Button { Text = "Ignition / Start" });
+
+        _mixSlider = MakeKnob(0, 1, 0);
+        _mixSlider.Step = 0.01;
+        _mixSlider.ValueChanged += v =>
+        {
+            SimBus.Instance.Propulsion.MixTarget = (float)v;
+            PublishPropulsionCommand();
+        };
+        root.AddChild(Labeled("Propellant Mix (Economy <-> Power)", _mixSlider));
+
+        _engineTempGauge = MakeGauge(0);
+        _engineTempGauge.MaxValue = 1000; // matches PlayerShip's engine-temp clamp range
+        root.AddChild(Labeled("Engine Temp", _engineTempGauge));
+
+        _overheatLabel = new Label { Text = "" };
+        root.AddChild(_overheatLabel);
+
+        _rcsToggle = new CheckButton { Text = "RCS" };
+        _rcsToggle.Toggled += pressed =>
+        {
+            SimBus.Instance.Propulsion.RcsEnabled = pressed;
+            PublishPropulsionCommand();
+        };
+        root.AddChild(_rcsToggle);
+
+        root.AddChild(new CheckButton { Text = "Reverse Thrust" }); // visual only, see comment above
+        root.AddChild(new Button { Text = "Emergency Cutoff" });    // visual only, see comment above
+
+        _dampenerToggle = new CheckButton { Text = "Dampeners", ButtonPressed = true };
+        _dampenerToggle.Toggled += pressed =>
+        {
+            SimBus.Instance.Propulsion.DampenersEnabled = pressed;
+            PublishPropulsionCommand();
+        };
+        root.AddChild(_dampenerToggle);
+
+        return root;
+    }
+
+    private Control BuildEngineeringTab()
+    {
+        var root = new VBoxContainer();
+        string[] encoderNames = { "Weapons", "Engines", "FTL", "Utility 1", "Utility 2", "Utility 3", "Utility 4" };
+        foreach (var name in encoderNames)
+        {
+            var led = MakeLed(LedOff);
+            var knob = MakeKnob();
+            root.AddChild(Labeled(name, Row(knob, led)));
+        }
+
+        root.AddChild(new HSeparator());
+        root.AddChild(Labeled("Reactor Output", MakeKnob(0, 100, 100)));
+        root.AddChild(Labeled("Total Power", MakeGauge(100)));
+        root.AddChild(new Button { Text = "SCRAM" }); // hold-to-confirm deliberately skipped this batch
+
+        root.AddChild(new HSeparator());
+        root.AddChild(new Label { Text = "Repair Priority" });
+        var repairRow1 = new HBoxContainer();
+        var repairRow2 = new HBoxContainer();
+        for (int i = 1; i <= 8; i++)
+        {
+            var btn = new Button { Text = $"Repair {i}" };
+            (i <= 4 ? repairRow1 : repairRow2).AddChild(btn);
+        }
+        root.AddChild(repairRow1);
+        root.AddChild(repairRow2);
+        return root;
+    }
+
+    private Control BuildHardpointTab(int index)
+    {
+        var root = new VBoxContainer();
+        root.AddChild(Labeled("Arm", new CheckButton()));
+        root.AddChild(new Label { Text = $"Module ID: HP-{index:00}" });
+        root.AddChild(new Label
+        {
+            Text = "[ screen placeholder ]",
+            CustomMinimumSize = new Vector2(300, 80),
+        });
+
+        var softKeyGrid = new GridContainer { Columns = 4 };
+        for (int i = 1; i <= 8; i++)
+        {
+            softKeyGrid.AddChild(new Button { Text = $"Soft {i}" });
+        }
+        root.AddChild(softKeyGrid);
+
+        root.AddChild(Labeled("Encoder 1", MakeKnob()));
+        root.AddChild(Labeled("Encoder 2", MakeKnob()));
+        return root;
+    }
+
+    // --- Touchscreen <-> SimBus sync -------------------------------------
+
+    // LED and button state are driven entirely by the MQTT round-trip
+    // (press → input topic → sim-core → output topic → SimBus.Touchscreen.Mode)
+    // rather than the button's own toggle state, so a future sim-core override
+    // (e.g. mode locked during loadout) reflects in the UI without extra wiring.
+    private void SyncTouchscreenFromBus()
+    {
+        if (SimBus.Instance == null || _touchscreenButtons == null) return;
+
+        var mode = SimBus.Instance.Touchscreen.Mode;
+        if (mode == _lastTouchscreenMode) return;
+        _lastTouchscreenMode = mode;
+
+        for (int i = 0; i < _touchscreenButtons.Length; i++)
+        {
+            bool active = TouchscreenModeNames[i].ToLowerInvariant() == mode;
+            if (_touchscreenButtons[i].ButtonPressed != active)
+                _touchscreenButtons[i].SetPressedNoSignal(active);
+            _touchscreenLeds[i].Color = active ? LedGreen : LedOff;
+        }
+    }
+
+    // --- Propulsion <-> SimBus sync --------------------------------------
+
+    private void SyncPropulsionFromBus()
+    {
+        if (SimBus.Instance == null) return;
+        var propulsion = SimBus.Instance.Propulsion;
+
+        _engineTempGauge.Value = propulsion.EngineTemp;
+        _overheatLabel.Text = propulsion.Overheated
+            ? "OVERHEAT -- propulsion disabled"
+            : "";
+
+        // Use SetPressedNoSignal / SetValueNoSignal so a keyboard-driven
+        // change (X, V, 1, 2) reflects in the UI without re-firing the
+        // Toggled/ValueChanged handlers back at SimBus.
+        if (_rcsToggle.ButtonPressed != propulsion.RcsEnabled)
+        {
+            _rcsToggle.SetPressedNoSignal(propulsion.RcsEnabled);
+        }
+
+        if (_dampenerToggle.ButtonPressed != propulsion.DampenersEnabled)
+        {
+            _dampenerToggle.SetPressedNoSignal(propulsion.DampenersEnabled);
+        }
+
+        if (!Mathf.IsEqualApprox((float)_mixSlider.Value, propulsion.MixTarget))
+        {
+            _mixSlider.SetValueNoSignal(propulsion.MixTarget);
+        }
+    }
+
+    // --- FTL <-> SimBus sync ---------------------------------------------
+
+    private void SyncFtlFromBus(double delta)
+    {
+        if (SimBus.Instance == null) return;
+        var ftl = SimBus.Instance.Ftl;
+
+        if (_ftlArmToggle.ButtonPressed != ftl.Armed)
+        {
+            _ftlArmToggle.SetPressedNoSignal(ftl.Armed);
+        }
+
+        // Destination can only be (re-)selected while idle -- once VECTOR
+        // locks it in, prev/next stop having an effect (panel-control-designs.md:
+        // "VECTOR is one action combining destination lock...").
+        bool destLocked = ftl.Phase != FtlPhase.Idle;
+        _ftlDestPrev.Disabled = destLocked;
+        _ftlDestNext.Disabled = destLocked;
+        _ftlDestLabel.Text = SimBus.FtlState.Destinations[ftl.DestinationIndex];
+
+        _ledBlinkClock += delta;
+        bool blinkOn = (_ledBlinkClock % 0.5) < 0.25;
+
+        _ftlVectorLed.Color = ftl.Phase switch
+        {
+            FtlPhase.Charging => blinkOn ? LedOrange : LedOff,
+            FtlPhase.Ready or FtlPhase.Jumping or FtlPhase.Complete => LedOrange,
+            _ => LedOff,
+        };
+
+        _ftlJumpLed.Color = ftl.Phase switch
+        {
+            FtlPhase.Jumping => blinkOn ? LedGreen : LedOff,
+            FtlPhase.Complete => LedGreen,
+            _ => LedOff,
+        };
+
+        _ftlVectorButton.Disabled = !ftl.Armed || ftl.Phase != FtlPhase.Idle;
+        _ftlJumpButton.Disabled = ftl.Phase != FtlPhase.Ready;
+
+        _ftlStatusLabel.Text = ftl.Phase switch
+        {
+            FtlPhase.Idle => ftl.Aborted ? "ABORTED -- propulsion disabled" : "",
+            FtlPhase.Charging => $"Charging... {ftl.ChargeProgress * 100f:0}%",
+            FtlPhase.Ready => "READY",
+            FtlPhase.Jumping => $"Jumping... {ftl.JumpProgress * 100f:0}%",
+            FtlPhase.Complete => "JUMP COMPLETE",
+            _ => "",
+        };
+    }
+}
