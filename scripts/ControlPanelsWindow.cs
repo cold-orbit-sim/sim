@@ -548,7 +548,7 @@ public partial class ControlPanelsWindow : Window
         // Destination can only be (re-)selected while idle -- once VECTOR
         // locks it in, prev/next stop having an effect (panel-control-designs.md:
         // "VECTOR is one action combining destination lock...").
-        bool destLocked = ftl.Phase != FtlPhase.Idle;
+        bool destLocked = ftl.Phase is not FtlPhase.Idle;
         _ftlDestPrev.Disabled = destLocked;
         _ftlDestNext.Disabled = destLocked;
         _ftlDestLabel.Text = SimBus.FtlState.Destinations[ftl.DestinationIndex];
@@ -559,14 +559,14 @@ public partial class ControlPanelsWindow : Window
         _ftlVectorLed.Color = ftl.Phase switch
         {
             FtlPhase.Charging => blinkOn ? LedOrange : LedOff,
-            FtlPhase.Ready or FtlPhase.Jumping or FtlPhase.Complete => LedOrange,
+            FtlPhase.Ready or FtlPhase.Jumping => LedOrange,
             _ => LedOff,
         };
 
         _ftlJumpLed.Color = ftl.Phase switch
         {
             FtlPhase.Jumping => blinkOn ? LedGreen : LedOff,
-            FtlPhase.Complete => LedGreen,
+            FtlPhase.Cooldown => LedGreen,
             _ => LedOff,
         };
 
@@ -579,7 +579,7 @@ public partial class ControlPanelsWindow : Window
             FtlPhase.Charging => $"Charging... {ftl.ChargeProgress * 100f:0}%",
             FtlPhase.Ready => "READY",
             FtlPhase.Jumping => $"Jumping... {ftl.JumpProgress * 100f:0}%",
-            FtlPhase.Complete => "JUMP COMPLETE",
+            FtlPhase.Cooldown => "COOLDOWN",
             _ => "",
         };
     }

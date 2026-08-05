@@ -33,9 +33,12 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float HeatGenerationRate { get; set; } = 70f;   // deg/sec at full throttle+power
     [Export] public float CoolingRate { get; set; } = 0.02f;        // fraction of current temp/sec
     [Export] public float MaxEngineTemp { get; set; } = 900f;       // deg C, propulsion cutoff
+    [Export] public float PowerPerEnginekW { get; set; } = 1500f;   // kW per engine at full throttle
     [Export] public float FtlChargeDuration { get; set; } = 5f;     // seconds, VECTOR spool-up
     [Export] public float FtlJumpDuration { get; set; } = 3f;       // seconds, JUMP execution
+    [Export] public float FtlCooldownDuration { get; set; } = 5f;   // seconds, post-jump/abort cooldown
     [Export] public float FtlJumpDistance { get; set; } = 5000f;    // metres, placeholder per-destination offset
+    [Export] public float MaxSignalLagS { get; set; } = 4.0f;       // seconds, FTL signal-lag peak
     [Export] public float TelemetryPublishRateHz { get; set; } = 10f; // MQTT telemetry publish rate
     [Export] public NodePath DebugLabelPath { get; set; } = new NodePath();
     [Export] public NodePath HelpLabelPath { get; set; } = new NodePath();
@@ -44,27 +47,25 @@ public partial class PlayerShip : RigidBody3D
     private float _propellantMix = 0f;       // 0 = Economy, 1 = Power
     private float _engineTemp = 0f;          // deg C, 0-1000
     private bool _propulsionOverheated = false;
+    private float _thrustInput = 0f;         // 0-1, abs of current thrust axis
+    private bool _reverseEnabled = false;    // true while reverse thrust key is held
+    private float _previousVelocity = 0f;    // for acceleration derivation
     private FtlPhase _ftlPhase = FtlPhase.Idle;
     private float _ftlTimer = 0f;
     private bool _ftlAborted = false;
+    private float _ftlSignalLagS = 0f;
     private float _telemetryPublishAccumulator = 0f;
     private Label _debugLabel;
     private Label _helpLabel;
 
-    // "Last published" snapshots for the on-change state topics (see
-    // PublishMqttState). Only updated when Publish() confirms the send was
-    // actually attempted while connected -- see MqttTelemetryPublisher.
-    private bool _mqttPropulsionStateInitialized = false;
-    private float _mqttLastMix;
-    private bool _mqttLastRcsEnabled;
-    private bool _mqttLastDampenersEnabled;
-    private bool _mqttLastOverheated;
+    // Alert state tracking -- raise/clear only on transitions so we don't
+    // republish the full alerts array on every physics frame.
+    private bool _alertOverheatActive = false;
+    private bool _alertFtlAbortActive = false;
+    private bool _mqttAlertsNeedPublish = true; // force publish on first connect
 
-    private bool _mqttFtlStateInitialized = false;
-    private FtlPhase _mqttLastFtlPhase;
-    private bool _mqttLastFtlArmed;
-    private int _mqttLastFtlDestinationIndex;
-    private bool _mqttLastFtlAborted;
+    // Mission-elapsed timer (seconds) used for alert timestamps.
+    private float _missionTimeS = 0f;
 
     private const string HelpText =
         "Controls\n" +
@@ -116,11 +117,16 @@ public partial class PlayerShip : RigidBody3D
                 _helpLabel.Visible = _helpVisible;
             }
         }
+
+        // Force alert re-publish after each broker reconnect so the touchscreen
+        // recovers the correct alert state without waiting for a state change.
+        SimBus.Instance.Mqtt.Connected += () => { _mqttAlertsNeedPublish = true; };
     }
 
     public override void _PhysicsProcess(double delta)
     {
         float dt = (float)delta;
+        _missionTimeS += dt;
         HandleMix(dt);
         HandleThrust(dt);
         HandleStrafe();
@@ -130,9 +136,9 @@ public partial class PlayerShip : RigidBody3D
         HandleHelpToggle();
         HandleFtl(dt);
         UpdateDebugLabel();
-        PublishTelemetry();
-        PublishMqttState();
-        PublishMqttTelemetry(dt);
+        PublishTelemetry(dt);
+        PublishMqttState();          // immediate: alerts only
+        PublishMqttTelemetry(dt);   // rate-limited: propulsion + FTL state
     }
 
     private void HandleMix(float dt)
@@ -154,19 +160,22 @@ public partial class PlayerShip : RigidBody3D
 
     private void HandleThrust(float dt)
     {
-        float thrustInput = 0f;
-        if (Input.IsActionPressed("thrust_forward")) thrustInput += 1f;
-        if (Input.IsActionPressed("thrust_reverse")) thrustInput -= 1f;
+        _thrustInput = 0f;
+        _reverseEnabled = false;
 
-        if (thrustInput != 0f && !_propulsionOverheated)
+        if (Input.IsActionPressed("thrust_forward")) _thrustInput += 1f;
+        if (Input.IsActionPressed("thrust_reverse")) { _thrustInput += 1f; _reverseEnabled = true; }
+
+        if (_thrustInput > 0f && !_propulsionOverheated)
         {
             float effectiveThrust = ThrustForce * (0.6f + 0.8f * _propellantMix);
+            float direction = _reverseEnabled ? -1f : 1f;
             Vector3 forward = -GlobalTransform.Basis.Z; // Godot forward is -Z
-            ApplyCentralForce(forward * effectiveThrust * thrustInput);
+            ApplyCentralForce(forward * effectiveThrust * direction);
 
-            _engineTemp += Mathf.Abs(thrustInput) * _propellantMix * HeatGenerationRate * dt;
+            _engineTemp += _thrustInput * _propellantMix * HeatGenerationRate * dt;
         }
-        else if (thrustInput == 0f && SimBus.Instance.Propulsion.DampenersEnabled)
+        else if (_thrustInput == 0f && SimBus.Instance.Propulsion.DampenersEnabled)
         {
             // Velocity-proportional brake toward zero. Not a true PD
             // controller, just enough to feel like the ship "wants" to
@@ -300,99 +309,99 @@ public partial class PlayerShip : RigidBody3D
             "? for controls";
     }
 
-    private void PublishTelemetry()
+    // Updates SimBus.Propulsion telemetry each physics frame.
+    // Acceleration is derived from the velocity delta since the last frame.
+    private void PublishTelemetry(float dt)
     {
+        float velocity = LinearVelocity.Length();
+        float acceleration = dt > 0f ? (velocity - _previousVelocity) / dt : 0f;
+        _previousVelocity = velocity;
+
         SimBus.Instance.Propulsion.PublishTelemetry(
-            _propellantMix, _engineTemp, _propulsionOverheated, _propulsionOverheated, LinearVelocity.Length());
+            propellantMix: _propellantMix,
+            engineTemp: _engineTemp,
+            overheated: _propulsionOverheated,
+            propulsionDisabled: _propulsionOverheated,
+            velocity: velocity,
+            accelerationMs2: acceleration,
+            throttleInput: _thrustInput,
+            reverseEnabled: _reverseEnabled);
     }
 
-    // MQTT publish paths alongside PublishTelemetry() above: that one
-    // updates SimBus in-process every physics frame for the existing Godot
-    // UI window; these push the same panel state out over MQTT for external
-    // subscribers (master plan §3.4's eventual browser-based aux panels),
-    // following the state-vs-telemetry topic split §3.1b establishes for
-    // the hardpoints contract. Reads back from SimBus rather than local
-    // fields so there's one source of truth for "what a panel's state
-    // currently is" -- by this point in the frame both PublishTelemetry()
-    // and HandleFtl()'s ftl.PublishTelemetry() have already run.
+    // MQTT publish paths:
+    //
+    // PublishMqttState()     — immediate, on-change. Alerts only (discrete events
+    //                          that should reach subscribers without delay).
+    //
+    // PublishMqttTelemetry() — rate-limited to TelemetryPublishRateHz. Propulsion
+    //                          and FTL state (now includes continuous fields like
+    //                          velocity and temp that change every frame, so
+    //                          publishing every-physics-frame would flood the broker).
 
-    // Discrete/settable state a display needs correct on reconnect:
-    // retained, QoS 1, published only when something actually changed
-    // (§3.1b's performance note -- controls publish on change, not
-    // continuously), not throttled to TelemetryPublishRateHz since a
-    // change should reach subscribers immediately, not wait for the next
-    // tick window.
     private void PublishMqttState()
     {
-        var mqtt = SimBus.Instance.Mqtt;
-        PublishPropulsionStateIfChanged(mqtt);
-        PublishFtlStateIfChanged(mqtt);
+        UpdateAlerts();
     }
 
-    private void PublishPropulsionStateIfChanged(MqttTelemetryPublisher mqtt)
+    // ── Alert management ───────────────────────────────────────────────────
+
+    private void UpdateAlerts()
     {
-        var p = SimBus.Instance.Propulsion;
-        bool changed = !_mqttPropulsionStateInitialized
-            || p.PropellantMix != _mqttLastMix
-            || p.RcsEnabled != _mqttLastRcsEnabled
-            || p.DampenersEnabled != _mqttLastDampenersEnabled
-            || p.Overheated != _mqttLastOverheated;
-        if (!changed) return;
+        var alerts = SimBus.Instance.Alerts;
+        bool changed = false;
 
-        string payload = JsonSerializer.Serialize(new
+        // Propulsion overheat: warning, system "engines"
+        bool wantOverheat = _propulsionOverheated;
+        bool hasOverheat = _alertOverheatActive;
+        if (wantOverheat && !hasOverheat)
         {
-            mix = p.PropellantMix,
-            rcs_enabled = p.RcsEnabled,
-            dampeners_enabled = p.DampenersEnabled,
-            overheated = p.Overheated,
-            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
+            alerts.Active.Add(new SimBus.AlertEntry(
+                Id: "alert_engines_overheat",
+                Severity: "warning",
+                System: "engines",
+                Message: "ENGINE OVERHEAT",
+                TimestampS: (long)_missionTimeS));
+            _alertOverheatActive = true;
+            changed = true;
+        }
+        else if (!wantOverheat && hasOverheat)
+        {
+            alerts.Active.RemoveAll(a => a.Id == "alert_engines_overheat");
+            _alertOverheatActive = false;
+            changed = true;
+        }
 
-        bool sent = mqtt.Publish("coldorbit/output/propulsion/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
-        if (!sent) return; // not connected -- retry next tick against the same unsent snapshot
+        // FTL charge aborted: caution, system "ftl"
+        // Cleared when a new VECTOR press starts (i.e. phase transitions to Charging).
+        bool wantFtlAbort = _ftlAborted;
+        bool hasFtlAbort = _alertFtlAbortActive;
+        if (wantFtlAbort && !hasFtlAbort)
+        {
+            alerts.Active.Add(new SimBus.AlertEntry(
+                Id: "alert_ftl_aborted",
+                Severity: "caution",
+                System: "ftl",
+                Message: "FTL CHARGE ABORTED",
+                TimestampS: (long)_missionTimeS));
+            _alertFtlAbortActive = true;
+            changed = true;
+        }
+        else if (!wantFtlAbort && hasFtlAbort)
+        {
+            alerts.Active.RemoveAll(a => a.Id == "alert_ftl_aborted");
+            _alertFtlAbortActive = false;
+            changed = true;
+        }
 
-        _mqttLastMix = p.PropellantMix;
-        _mqttLastRcsEnabled = p.RcsEnabled;
-        _mqttLastDampenersEnabled = p.DampenersEnabled;
-        _mqttLastOverheated = p.Overheated;
-        _mqttPropulsionStateInitialized = true;
+        if (changed || _mqttAlertsNeedPublish)
+        {
+            SimBus.Instance.PublishCurrentAlerts();
+            _mqttAlertsNeedPublish = false;
+        }
     }
 
-    private void PublishFtlStateIfChanged(MqttTelemetryPublisher mqtt)
-    {
-        var ftl = SimBus.Instance.Ftl;
-        bool changed = !_mqttFtlStateInitialized
-            || ftl.Phase != _mqttLastFtlPhase
-            || ftl.Armed != _mqttLastFtlArmed
-            || ftl.DestinationIndex != _mqttLastFtlDestinationIndex
-            || ftl.Aborted != _mqttLastFtlAborted;
-        if (!changed) return;
+    // ── Rate-limited state publishes ──────────────────────────────────────
 
-        string payload = JsonSerializer.Serialize(new
-        {
-            phase = ftl.Phase.ToString().ToLowerInvariant(),
-            armed = ftl.Armed,
-            destination_index = ftl.DestinationIndex,
-            aborted = ftl.Aborted,
-            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
-
-        bool sent = mqtt.Publish("coldorbit/output/ftl/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
-        if (!sent) return;
-
-        _mqttLastFtlPhase = ftl.Phase;
-        _mqttLastFtlArmed = ftl.Armed;
-        _mqttLastFtlDestinationIndex = ftl.DestinationIndex;
-        _mqttLastFtlAborted = ftl.Aborted;
-        _mqttFtlStateInitialized = true;
-    }
-
-    // Live numeric readouts where staleness is worse than a brief gap:
-    // non-retained, QoS 0, throttled to TelemetryPublishRateHz rather than
-    // published every physics frame. FTL telemetry is deliberately not
-    // published this batch -- see the batch 6 handback for why (signal-lag
-    // telemetry doesn't exist yet, and charge/jump progress alone isn't
-    // worth a topic that gets reshaped as soon as that lands).
     private void PublishMqttTelemetry(float dt)
     {
         _telemetryPublishAccumulator += dt;
@@ -400,13 +409,75 @@ public partial class PlayerShip : RigidBody3D
         if (_telemetryPublishAccumulator < interval) return;
         _telemetryPublishAccumulator = 0f;
 
-        var propulsion = SimBus.Instance.Propulsion;
+        var mqtt = SimBus.Instance.Mqtt;
+        PublishPropulsionState(mqtt);
+        PublishFtlState(mqtt);
+    }
+
+    private void PublishPropulsionState(MqttTelemetryPublisher mqtt)
+    {
+        var p = SimBus.Instance.Propulsion;
+
+        // Three engines share a single temperature sensor; split effective
+        // thrust power equally across port/centre/starboard.
+        float enginePowerEach = p.ThrottleInput * PowerPerEnginekW;
+        int tempC = (int)p.EngineTemp;
+
         string payload = JsonSerializer.Serialize(new
         {
-            engine_temp = propulsion.EngineTemp,
-            velocity = propulsion.Velocity,
+            // armed: no propulsion Arm state in sim yet -- placeholder (§3.1b batch 8)
+            armed = false,
+            throttle = MathF.Round(p.ThrottleInput, 3),
+            mix = MathF.Round(p.PropellantMix, 3),
+            rcs_enabled = p.RcsEnabled,
+            dampeners_enabled = p.DampenersEnabled,
+            reverse_enabled = p.ReverseEnabled,
+            engines = new object[]
+            {
+                new { id = "port",      power_kw = (int)enginePowerEach, temp_c = tempC },
+                new { id = "centre",    power_kw = (int)enginePowerEach, temp_c = tempC },
+                new { id = "starboard", power_kw = (int)enginePowerEach, temp_c = tempC },
+            },
+            velocity_ms = MathF.Round(p.Velocity, 2),
+            acceleration_ms2 = MathF.Round(p.AccelerationMs2, 2),
+            // soi_body: no gravity/SOI model exists yet -- hardcoded placeholder (§3.1b batch 8)
+            soi_body = "Unknown",
         });
-        SimBus.Instance.Mqtt.Publish("coldorbit/output/propulsion/telemetry", payload, MqttQualityOfServiceLevel.AtMostOnce, retain: false);
+
+        mqtt.Publish("coldorbit/output/propulsion/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    private void PublishFtlState(MqttTelemetryPublisher mqtt)
+    {
+        var ftl = SimBus.Instance.Ftl;
+
+        // Destination string (null when not armed, per §3.1b).
+        string? destination = ftl.Armed
+            ? SimBus.FtlState.Destinations[ftl.DestinationIndex]
+            : null;
+
+        float rangeAu = ftl.Armed
+            ? SimBus.FtlState.DestinationRangesAu[ftl.DestinationIndex]
+            : 0f;
+
+        // power_kw: 0 at idle, nominal otherwise. No real power model yet.
+        // power_max_kw: fixed placeholder (§3.1b batch 8).
+        int powerKw = ftl.Phase == FtlPhase.Idle ? 0 : 340;
+        const int PowerMaxKw = 500;
+
+        string payload = JsonSerializer.Serialize(new
+        {
+            armed = ftl.Armed,
+            phase = ftl.Phase.ToString().ToLowerInvariant(),
+            progress = MathF.Round(ftl.Progress, 3),
+            destination,
+            range_au = MathF.Round(rangeAu, 2),
+            signal_lag_s = MathF.Round(ftl.SignalLagS, 2),
+            power_kw = powerKw,
+            power_max_kw = PowerMaxKw,
+        });
+
+        mqtt.Publish("coldorbit/output/ftl/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 
     // FTL jump-drive mechanic (master plan §2; documentation/panel-control-designs.md
@@ -418,6 +489,10 @@ public partial class PlayerShip : RigidBody3D
     // an in-progress jump") -- read via the decoupled IsPropulsionDisabled
     // flag so a future damage/sabotage system can trigger the same abort
     // without this method changing.
+    //
+    // Cooldown phase (batch 8 §2): after a completed jump or an abort the
+    // drive enters Cooldown. Arm/VECTOR/Jump are no-ops during Cooldown so
+    // the drive cannot be used as a panic button.
     private void HandleFtl(float dt)
     {
         var ftl = SimBus.Instance.Ftl;
@@ -425,16 +500,17 @@ public partial class PlayerShip : RigidBody3D
 
         if (inFlight && SimBus.Instance.Propulsion.IsPropulsionDisabled)
         {
-            _ftlPhase = FtlPhase.Idle;
+            // Overheat abort: go to Cooldown (not Idle) so the drive is
+            // inert for CooldownDuration before another attempt can be made.
+            _ftlPhase = FtlPhase.Cooldown;
             _ftlTimer = 0f;
             _ftlAborted = true;
             ftl.Armed = false; // force re-arm before another attempt
         }
-        else if (!ftl.Armed && _ftlPhase != FtlPhase.Idle)
+        else if (!ftl.Armed && _ftlPhase is FtlPhase.Charging or FtlPhase.Ready)
         {
-            // Deliberate disarm cancels whatever stage FTL was in -- Arm
-            // gates the whole stack (panel-control-designs.md convention).
-            // Not an abort: no fault occurred, so _ftlAborted stays as-is.
+            // Deliberate disarm cancels charge/ready -- goes straight to Idle,
+            // not Cooldown, because no fault occurred (panel-control-designs.md).
             _ftlPhase = FtlPhase.Idle;
             _ftlTimer = 0f;
         }
@@ -442,6 +518,8 @@ public partial class PlayerShip : RigidBody3D
         switch (_ftlPhase)
         {
             case FtlPhase.Idle:
+                // Cooldown guards are already handled above; only act on VECTOR
+                // when actually armed and idle.
                 if (ftl.Armed && ftl.VectorRequested)
                 {
                     // No obstruction/traffic model exists yet, so the
@@ -449,7 +527,7 @@ public partial class PlayerShip : RigidBody3D
                     // panel-control-designs.md "Open dependency".
                     _ftlPhase = FtlPhase.Charging;
                     _ftlTimer = 0f;
-                    _ftlAborted = false;
+                    _ftlAborted = false; // clear abort flag on new attempt
                 }
                 break;
 
@@ -475,26 +553,59 @@ public partial class PlayerShip : RigidBody3D
                 if (_ftlTimer >= FtlJumpDuration)
                 {
                     ExecuteJump(ftl.DestinationIndex);
-                    _ftlPhase = FtlPhase.Complete;
+                    _ftlPhase = FtlPhase.Cooldown;
                     _ftlTimer = 0f;
                 }
                 break;
 
-            case FtlPhase.Complete:
-                // Holds solid-green until the player disarms (handled by the
-                // arm-gate branch above), matching the panel's "solid when
-                // complete" LED behaviour.
+            case FtlPhase.Cooldown:
+                _ftlTimer += dt;
+                if (_ftlTimer >= FtlCooldownDuration)
+                {
+                    _ftlPhase = FtlPhase.Idle;
+                    _ftlTimer = 0f;
+                }
                 break;
         }
 
         ftl.VectorRequested = false;
         ftl.JumpRequested = false;
 
-        bool chargedOrLater = _ftlPhase is FtlPhase.Ready or FtlPhase.Jumping or FtlPhase.Complete;
-        float chargeProgress = _ftlPhase == FtlPhase.Charging ? _ftlTimer / FtlChargeDuration : (chargedOrLater ? 1f : 0f);
-        float jumpProgress = _ftlPhase == FtlPhase.Jumping ? _ftlTimer / FtlJumpDuration : (_ftlPhase == FtlPhase.Complete ? 1f : 0f);
+        // Progress: 0→1 during Charging, 1.0 during Ready, 0 during Jumping,
+        // 1→0 during Cooldown, 0 at Idle.
+        float progress = _ftlPhase switch
+        {
+            FtlPhase.Charging => _ftlTimer / FtlChargeDuration,
+            FtlPhase.Ready    => 1f,
+            FtlPhase.Cooldown => 1f - (_ftlTimer / FtlCooldownDuration),
+            _                 => 0f,
+        };
 
-        ftl.PublishTelemetry(_ftlPhase, chargeProgress, jumpProgress, _ftlAborted);
+        // Signal lag (batch 8 §3.1b):
+        //   Charging  → ramps 0 → MaxSignalLagS
+        //   Ready     → holds at MaxSignalLagS
+        //   Jumping   → holds at MaxSignalLagS (peak, jump moment)
+        //   Cooldown  → decays MaxSignalLagS → 0
+        //   Idle      → 0
+        _ftlSignalLagS = _ftlPhase switch
+        {
+            FtlPhase.Charging => (_ftlTimer / FtlChargeDuration) * MaxSignalLagS,
+            FtlPhase.Ready    => MaxSignalLagS,
+            FtlPhase.Jumping  => MaxSignalLagS,
+            FtlPhase.Cooldown => (1f - _ftlTimer / FtlCooldownDuration) * MaxSignalLagS,
+            _                 => 0f,
+        };
+
+        // ChargeProgress / JumpProgress kept for ControlPanelsWindow status label.
+        bool chargedOrLater = _ftlPhase is FtlPhase.Ready or FtlPhase.Jumping or FtlPhase.Cooldown;
+        float chargeProgress = _ftlPhase == FtlPhase.Charging
+            ? _ftlTimer / FtlChargeDuration
+            : (chargedOrLater ? 1f : 0f);
+        float jumpProgress = _ftlPhase == FtlPhase.Jumping
+            ? _ftlTimer / FtlJumpDuration
+            : (_ftlPhase == FtlPhase.Cooldown ? 1f : 0f);
+
+        ftl.PublishTelemetry(_ftlPhase, chargeProgress, jumpProgress, progress, _ftlSignalLagS, _ftlAborted);
     }
 
     private void ExecuteJump(int destinationIndex)
