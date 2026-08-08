@@ -22,6 +22,7 @@ config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 
 SimBus="*res://scripts/SimBus.cs"
 ControlPanelsWindow="*res://scenes/control_panels_window.tscn"
+AdminPanelWindow="*res://scenes/admin_panel_window.tscn"
 
 [display]
 

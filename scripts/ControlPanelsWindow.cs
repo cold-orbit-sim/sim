@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text.Json;
 using Godot;
 using MQTTnet.Protocol;
@@ -39,6 +40,7 @@ public partial class ControlPanelsWindow : Window
     private static readonly Color LedOff = new Color(0.2f, 0.2f, 0.2f);
     private static readonly Color LedGreen = new Color(0.2f, 0.9f, 0.3f);
     private static readonly Color LedOrange = new Color(1.0f, 0.6f, 0.0f);
+    private static readonly Color LedRed = new Color(0.9f, 0.15f, 0.15f);
 
     private ProgressBar _engineTempGauge;
     private Label _overheatLabel;
@@ -63,6 +65,24 @@ public partial class ControlPanelsWindow : Window
     private ColorRect _ftlJumpLed;
     private Label _ftlStatusLabel;
     private double _ledBlinkClock; // seconds, drives VECTOR/JUMP LED flash
+
+    private Button _masterWarnButton;
+    private Button _masterCautButton;
+    private ColorRect _masterWarnLed;
+    private ColorRect _masterCautLed;
+
+    // ── Hardpoint panel state (one per slot) ──────────────────────────────
+    private sealed class HardpointPanelState
+    {
+        public int Slot;
+        public CheckButton ArmToggle;
+        public ColorRect ArmedLed;
+        public Label ModuleNameLabel;
+        public ColorRect ActiveLed;
+        public Label IntensityLabel;
+        public Label ModeLabel;
+    }
+    private readonly List<HardpointPanelState> _hardpointPanels = new();
 
     public override void _Ready()
     {
@@ -94,6 +114,8 @@ public partial class ControlPanelsWindow : Window
         SyncPropulsionFromBus();
         SyncFtlFromBus(delta);
         SyncTouchscreenFromBus();
+        SyncCommsFromBus();
+        SyncHardpointsFromBus();
     }
 
     // --- Layout helpers -----------------------------------------------
@@ -255,7 +277,23 @@ public partial class ControlPanelsWindow : Window
     private Control BuildCommsTab()
     {
         var root = new VBoxContainer();
-        root.AddChild(Row(new Button { Text = "Master Warn/Caution" }, MakeLed(LedOff)));
+
+        // Master Warn: acks all warnings AND cautions (higher-severity button — §3.1b).
+        // LED lit (red) while any warning is unacknowledged.
+        _masterWarnLed = MakeLed(LedOff);
+        _masterWarnButton = new Button { Text = "Master Warn" };
+        _masterWarnButton.ButtonDown += () => PublishButtonStateQos1("coldorbit/input/comms/master_warn", 1);
+        _masterWarnButton.ButtonUp   += () => PublishButtonStateQos1("coldorbit/input/comms/master_warn", 0);
+        root.AddChild(Row(_masterWarnButton, _masterWarnLed));
+
+        // Master Caution: acks cautions only.
+        // LED lit (orange) while any caution is unacknowledged.
+        _masterCautLed = MakeLed(LedOff);
+        _masterCautButton = new Button { Text = "Master Caution" };
+        _masterCautButton.ButtonDown += () => PublishButtonStateQos1("coldorbit/input/comms/master_caut", 1);
+        _masterCautButton.ButtonUp   += () => PublishButtonStateQos1("coldorbit/input/comms/master_caut", 0);
+        root.AddChild(Row(_masterCautButton, _masterCautLed));
+
         root.AddChild(Labeled("Volume", MakeKnob(0, 100, 50)));
         root.AddChild(Labeled("Clock", new Label { Text = "00:00:00" }));
         root.AddChild(Labeled("Comms LCD", new Label
@@ -376,6 +414,18 @@ public partial class ControlPanelsWindow : Window
         SimBus.Instance.Mqtt.Publish(topic, payload, MqttQualityOfServiceLevel.ExactlyOnce, retain: false);
     }
 
+    // QoS 1 variant for alert-ack topics (spec §3.1b batch 10).
+    private static void PublishButtonStateQos1(string topic, int state)
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        string payload = JsonSerializer.Serialize(new
+        {
+            state,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish(topic, payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: false);
+    }
+
     private Control BuildPropulsionTab()
     {
         var root = new VBoxContainer();
@@ -456,27 +506,104 @@ public partial class ControlPanelsWindow : Window
         return root;
     }
 
-    private Control BuildHardpointTab(int index)
+    private Control BuildHardpointTab(int slot)
     {
+        var hp = new HardpointPanelState { Slot = slot };
         var root = new VBoxContainer();
-        root.AddChild(Labeled("Arm", new CheckButton()));
-        root.AddChild(new Label { Text = $"Module ID: HP-{index:00}" });
-        root.AddChild(new Label
-        {
-            Text = "[ screen placeholder ]",
-            CustomMinimumSize = new Vector2(300, 80),
-        });
 
-        var softKeyGrid = new GridContainer { Columns = 4 };
-        for (int i = 1; i <= 8; i++)
+        // ── Arm ──────────────────────────────────────────────────────────
+        hp.ArmedLed = MakeLed(LedOff);
+        hp.ArmToggle = new CheckButton { Text = "Arm" };
+        hp.ArmToggle.Toggled += pressed =>
         {
-            softKeyGrid.AddChild(new Button { Text = $"Soft {i}" });
+            int state = pressed ? 1 : 0;
+            PublishHardpointInput(slot, "arm",
+                $"{{\"state\":{state},\"updated_at\":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}");
+        };
+        root.AddChild(Row(hp.ArmToggle, hp.ArmedLed));
+
+        // ── Module display ────────────────────────────────────────────────
+        hp.ModuleNameLabel = new Label
+        {
+            Text = "—",
+            CustomMinimumSize = new Vector2(220, 0),
+        };
+        hp.ActiveLed = MakeLed(LedOff);
+        root.AddChild(Row(hp.ModuleNameLabel, hp.ActiveLed));
+
+        hp.IntensityLabel = new Label { Text = "0%" };
+        root.AddChild(Labeled("Intensity / Cable", hp.IntensityLabel));
+
+        hp.ModeLabel = new Label { Text = "—" };
+        root.AddChild(Labeled("Mode", hp.ModeLabel));
+
+        // ── Soft keys ─────────────────────────────────────────────────────
+        // Layout matches §7.9 soft-key table: SK1-4 row, SK5-8 row.
+        // SK5=ON/LAUNCH, SK6=OFF/RELEASE, SK3=WELD, SK7=CUT, SK1/2/4/8=aim.
+        root.AddChild(new Label { Text = "Soft keys:" });
+        var (labels, keys) = (
+            new[] { "◄ SK1", "▲ SK2", "WELD SK3", "▼ SK4", "ON SK5", "OFF SK6", "CUT SK7", "► SK8" },
+            new[] { "SK1",   "SK2",   "SK3",       "SK4",   "SK5",    "SK6",     "SK7",     "SK8"   }
+        );
+        var grid = new GridContainer { Columns = 4 };
+        for (int i = 0; i < 8; i++)
+        {
+            var btn = new Button { Text = labels[i], CustomMinimumSize = new Vector2(90, 0) };
+            var key = keys[i];
+            var s = slot;
+            btn.ButtonDown += () => PublishHardpointInput(s, "softkey",
+                $"{{\"key\":\"{key}\",\"state\":1,\"updated_at\":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}");
+            btn.ButtonUp   += () => PublishHardpointInput(s, "softkey",
+                $"{{\"key\":\"{key}\",\"state\":0,\"updated_at\":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}");
+            grid.AddChild(btn);
         }
-        root.AddChild(softKeyGrid);
+        root.AddChild(grid);
 
-        root.AddChild(Labeled("Encoder 1", MakeKnob()));
-        root.AddChild(Labeled("Encoder 2", MakeKnob()));
+        // ── Encoder A (intensity / cable length) ─────────────────────────
+        // Real encoder sends +1/-1 per detent; buttons model that directly.
+        root.AddChild(new Label { Text = "Encoder A (intensity / cable):" });
+        var encDec = new Button { Text = "−" };
+        var encInc = new Button { Text = "+" };
+        encDec.Pressed += () => PublishHardpointInput(slot, "encoder_a",
+            $"{{\"delta\":-1,\"updated_at\":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}");
+        encInc.Pressed += () => PublishHardpointInput(slot, "encoder_a",
+            $"{{\"delta\":1,\"updated_at\":{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}");
+        root.AddChild(Row(encDec, encInc));
+
+        _hardpointPanels.Add(hp);
         return root;
+    }
+
+    private static void PublishHardpointInput(int slot, string subTopic, string payload)
+    {
+        SimBus.Instance?.Mqtt?.Publish(
+            $"coldorbit/input/hardpoints/{slot}/{subTopic}",
+            payload,
+            MqttQualityOfServiceLevel.AtLeastOnce,
+            retain: false);
+    }
+
+    // --- Hardpoints <-> SimBus sync --------------------------------------
+
+    private void SyncHardpointsFromBus()
+    {
+        if (SimBus.Instance == null) return;
+        foreach (var hp in _hardpointPanels)
+        {
+            var s = SimBus.Instance.Hardpoints[hp.Slot - 1];
+            hp.ArmToggle.SetPressedNoSignal(s.Armed);
+            hp.ArmedLed.Color = s.Armed ? LedGreen : LedOff;
+            hp.ActiveLed.Color = s.Active ? LedGreen : LedOff;
+
+            string name = s.Category == "empty" ? "(empty)" : (s.Name ?? s.Category);
+            if (hp.ModuleNameLabel.Text != name) hp.ModuleNameLabel.Text = name;
+
+            string intensity = $"{s.Intensity * 100f:0}%";
+            if (hp.IntensityLabel.Text != intensity) hp.IntensityLabel.Text = intensity;
+
+            string mode = s.Mode ?? "—";
+            if (hp.ModeLabel.Text != mode) hp.ModeLabel.Text = mode;
+        }
     }
 
     // --- Touchscreen <-> SimBus sync -------------------------------------
@@ -500,6 +627,20 @@ public partial class ControlPanelsWindow : Window
                 _touchscreenButtons[i].SetPressedNoSignal(active);
             _touchscreenLeds[i].Color = active ? LedGreen : LedOff;
         }
+    }
+
+    // --- Comms <-> SimBus sync -------------------------------------------
+
+    // Master Warn / Master Caution LEDs reflect unacknowledged alert state.
+    // SetPressedNoSignal is not needed here -- LEDs are ColorRects, not buttons.
+    private void SyncCommsFromBus()
+    {
+        if (SimBus.Instance == null || _masterWarnLed == null) return;
+        var alerts = SimBus.Instance.Alerts;
+        bool warnUnacked = alerts.Active.Exists(a => a.Severity == "warning" && !a.Acknowledged);
+        bool cautUnacked = alerts.Active.Exists(a => a.Severity == "caution" && !a.Acknowledged);
+        _masterWarnLed.Color = warnUnacked ? LedRed    : LedOff;
+        _masterCautLed.Color = cautUnacked ? LedOrange : LedOff;
     }
 
     // --- Propulsion <-> SimBus sync --------------------------------------

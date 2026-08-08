@@ -7,6 +7,10 @@ namespace ColdOrbit.SimCore;
 // since stars are effectively at infinity. Placeholder quality: low-poly
 // boxes, not art. Uses a single MultiMesh rather than individual
 // MeshInstance3D nodes since instance count can get large.
+//
+// Debris instances are visual-only (MultiMeshInstance3D has no per-instance
+// physics). Making them collidable would require individual RigidBody3D nodes
+// — deferred until the debris field has a gameplay role (salvage, hazard, etc.)
 public partial class DebrisField : MultiMeshInstance3D
 {
     [Export] public int DebrisCount { get; set; } = 400;

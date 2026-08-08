@@ -40,6 +40,10 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float FtlJumpDistance { get; set; } = 5000f;    // metres, placeholder per-destination offset
     [Export] public float MaxSignalLagS { get; set; } = 4.0f;       // seconds, FTL signal-lag peak
     [Export] public float TelemetryPublishRateHz { get; set; } = 10f; // MQTT telemetry publish rate
+    [Export] public float CollisionBounce { get; set; } = 0.3f;     // PhysicsMaterial.bounce (partial restitution; tunable)
+    [Export] public float CollisionFriction { get; set; } = 0.0f;   // PhysicsMaterial.friction (zero = no surface drag in space)
+    [Export] public float CollisionAlertThresholdN { get; set; } = 5000f; // impulse above this raises HULL IMPACT alert
+    [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
     [Export] public NodePath DebugLabelPath { get; set; } = new NodePath();
     [Export] public NodePath HelpLabelPath { get; set; } = new NodePath();
 
@@ -62,7 +66,15 @@ public partial class PlayerShip : RigidBody3D
     // republish the full alerts array on every physics frame.
     private bool _alertOverheatActive = false;
     private bool _alertFtlAbortActive = false;
+    private bool _alertCollisionActive = false;
     private bool _mqttAlertsNeedPublish = true; // force publish on first connect
+
+    // Collision impulse written from _IntegrateForces (physics step), read and
+    // cleared in HandleCollision (_PhysicsProcess). Both run on the main thread
+    // in Godot's default non-multithreaded physics mode, so no lock is needed.
+    private float _pendingCollisionImpulse = 0f;
+    private bool _collisionWantAlert = false;
+    private float _collisionAlertTimer = 0f;
 
     // Mission-elapsed timer (seconds) used for alert timestamps.
     private float _missionTimeS = 0f;
@@ -84,6 +96,18 @@ public partial class PlayerShip : RigidBody3D
     public override void _Ready()
     {
         GravityScale = 0f; // no gravity in space
+
+        // Enable contact reporting so _IntegrateForces receives impulse data.
+        ContactMonitor = true;
+        MaxContactsReported = 4;
+
+        // Build PhysicsMaterial from exported values so bounce/friction are tunable
+        // in the inspector without a rebuild.
+        PhysicsMaterialOverride = new PhysicsMaterial
+        {
+            Bounce = CollisionBounce,
+            Friction = CollisionFriction,
+        };
 
         RegisterKeyAction("thrust_forward", Key.W);
         RegisterKeyAction("thrust_reverse", Key.S);
@@ -135,10 +159,56 @@ public partial class PlayerShip : RigidBody3D
         HandleRcsToggle();
         HandleHelpToggle();
         HandleFtl(dt);
+        HandleCollision(dt);
         UpdateDebugLabel();
         PublishTelemetry(dt);
         PublishMqttState();          // immediate: alerts only
         PublishMqttTelemetry(dt);   // rate-limited: propulsion + FTL state
+    }
+
+    // Reads impulse data from _IntegrateForces (physics thread → main thread handoff)
+    // and from the admin simulate path. Manages the 3 s alert window.
+    // Placeholder hookpoint: actual hull damage reduction goes here when designed.
+    private void HandleCollision(float dt)
+    {
+        // Pick up admin-simulated collision (set by AdminTriggerCollisionAlert).
+        float adminN = SimBus.Instance.Propulsion.PendingAdminCollisionN;
+        if (adminN > 0f)
+        {
+            if (adminN > _pendingCollisionImpulse) _pendingCollisionImpulse = adminN;
+            SimBus.Instance.Propulsion.PendingAdminCollisionN = 0f;
+        }
+
+        if (_pendingCollisionImpulse > 0f)
+        {
+            SimBus.Instance.Propulsion.CollisionForceN = _pendingCollisionImpulse;
+            _collisionAlertTimer = CollisionAlertDurationS;
+            _collisionWantAlert = true;
+            _pendingCollisionImpulse = 0f;
+        }
+
+        if (_collisionWantAlert)
+        {
+            _collisionAlertTimer -= dt;
+            if (_collisionAlertTimer <= 0f)
+            {
+                _collisionWantAlert = false;
+                SimBus.Instance.Propulsion.CollisionForceN = 0f;
+            }
+        }
+    }
+
+    // Receives per-contact impulse data during the physics step. Writes only to
+    // _pendingCollisionImpulse (a plain float) — no SimBus or node method calls,
+    // as required for physics-thread callbacks.
+    public override void _IntegrateForces(PhysicsDirectBodyState3D state)
+    {
+        for (int i = 0; i < state.GetContactCount(); i++)
+        {
+            float impulse = state.GetContactImpulse(i).Length();
+            if (impulse > CollisionAlertThresholdN && impulse > _pendingCollisionImpulse)
+                _pendingCollisionImpulse = impulse;
+        }
     }
 
     private void HandleMix(float dt)
@@ -393,6 +463,29 @@ public partial class PlayerShip : RigidBody3D
             changed = true;
         }
 
+        // Hull impact — event-based, auto-clears after CollisionAlertDurationS.
+        // _collisionWantAlert is driven by HandleCollision's 3 s timer.
+        // Placeholder for damage system: actual health reduction hooks in here.
+        bool wantCollision = _collisionWantAlert;
+        bool hasCollision = _alertCollisionActive;
+        if (wantCollision && !hasCollision)
+        {
+            alerts.Active.Add(new SimBus.AlertEntry(
+                Id: "alert_collision",
+                Severity: "caution",
+                System: "hull",
+                Message: "HULL IMPACT",
+                TimestampS: (long)_missionTimeS));
+            _alertCollisionActive = true;
+            changed = true;
+        }
+        else if (!wantCollision && hasCollision)
+        {
+            alerts.Active.RemoveAll(a => a.Id == "alert_collision");
+            _alertCollisionActive = false;
+            changed = true;
+        }
+
         if (changed || _mqttAlertsNeedPublish)
         {
             SimBus.Instance.PublishCurrentAlerts();
@@ -440,6 +533,8 @@ public partial class PlayerShip : RigidBody3D
             },
             velocity_ms = MathF.Round(p.Velocity, 2),
             acceleration_ms2 = MathF.Round(p.AccelerationMs2, 2),
+            // collision_force_n: 0.0 at rest, peak impulse (N) for 3 s after impact.
+            collision_force_n = MathF.Round(p.CollisionForceN, 1),
             // soi_body: no gravity/SOI model exists yet -- hardcoded placeholder (§3.1b batch 8)
             soi_body = "Unknown",
         });

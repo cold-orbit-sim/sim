@@ -1,8 +1,9 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://scripts/PlayerShip.cs" id="1"]
 [ext_resource type="Script" path="res://scripts/StarfieldSky.cs" id="2"]
 [ext_resource type="Script" path="res://scripts/DebrisField.cs" id="3"]
+[ext_resource type="PackedScene" path="res://scenes/test_obstacles.tscn" id="4"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -37,10 +38,14 @@ light_energy = 1.2
 [node name="DebrisField" type="MultiMeshInstance3D" parent="."]
 script = ExtResource("3")
 
+[node name="TestObstacles" parent="." instance=ExtResource("4")]
+
 [node name="PlayerShip" type="RigidBody3D" parent="."]
 mass = 1000.0
 gravity_scale = 0.0
 can_sleep = false
+contact_monitor = true
+max_contacts_reported = 4
 script = ExtResource("1")
 DebugLabelPath = NodePath("../HUD/DebugLabel")
 HelpLabelPath = NodePath("../HUD/HelpLabel")

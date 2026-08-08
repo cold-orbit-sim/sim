@@ -1,288 +1,238 @@
-# Cold Orbit — Batch 8 Handover Back
+# Handover Back — Batch 13: Remaining Hardpoint Modules
 
-Session: 2026-08-05  
-Branch: main  
-Build: `dotnet build sim-core.csproj` → **0 errors**, 11 CS8632 warnings (nullable
-annotation style warnings, pre-existing pattern — project has no `<Nullable>enable</Nullable>`).
+**Godot 4.7 / .NET 8 — build: 0 errors, 35 warnings**
+(35 CS8632 nullable warnings — 33 pre-existing, 2 new from new nullable fields in HardpointSlot; no new warning categories)
 
 ---
 
-## Propulsion state (`coldorbit/output/propulsion/state`)
+## Summary of what was implemented
 
-**v43 contract shape: confirmed compliant.**
+### Task 1 — `SimBus.HardpointSlot` extension
 
-Published retained, QoS 1, at `TelemetryPublishRateHz` (default 10 Hz) from
-`PlayerShip.PublishPropulsionState()`.
+All fields added with correct defaults:
 
-### New payload shape
+```csharp
+// --- Cargo/Storage ---
+public float FillPct     { get; set; }           // default 0
+public string? Contents  { get; set; }           // default null
+public float? TempC      { get; set; }           // default null (reefer only)
+public float? TempMin    { get; set; }           // default null
+public float? TempMax    { get; set; }           // default null
 
+// --- Sensor/EW ---
+public bool ScannerModeActive { get; set; }      // default false
+public bool ScannerModeBeam   { get; set; }      // default false
+public float ScannerBearing   { get; set; }      // default 0; 0–360 wrapping
+public bool StealthOn         { get; set; }      // default false
+
+// --- Defense ---
+public bool ShieldOn                  { get; set; }      // default false
+public string ShieldSelectedFacing    { get; set; } = "fore";
+public Dictionary<string, float> ShieldStrengths { get; set; }
+    // = { "fore":0.5, "aft":0.5, "port":0.5, "starboard":0.5 }
+public bool PdEngaged          { get; set; }     // default false
+public bool MissileLockWarning { get; set; }     // default false
+public int  DecoyCount         { get; set; } = 12;
+```
+
+All fields reset to defaults in `HandleLoadoutConfirm` per the same pattern as base fields.
+
+---
+
+### Task 2 — `encoder_b` subscription
+
+`coldorbit/input/hardpoints/+/encoder_b` subscribed in `_Ready()`. Payload shape same as `encoder_a`.
+
+Wired per contract:
+- **Long-range Scanner Array:** adjusts `ScannerBearing` (±1°/detent, 0–360 wrapping) **only when** `ScannerModeActive && ScannerModeBeam`; logs and ignores otherwise. Calls `PublishHardpointModule` on change to keep `updated_at` fresh (bearing is not in the module state payload per the contract table).
+- **Prospecting Suite:** adjusts ore filter index (same `StepProspectingIndex` helper as encoder_a).
+- **Stealth/ECM Package:** adjusts `Intensity` (power draw) ±0.05/detent, 0–1 clamp.
+- **All others:** log and ignore.
+
+---
+
+### Task 3 — Soft-key handling (all categories)
+
+`HandleSoftkey` now dispatches by category to dedicated helpers:
+
+**`HandleSoftkeyUtilityTool`** — unchanged behaviour from batch 12.
+
+**`HandleSoftkeyUtilityTool` (cargo_storage)** — all SKs: no-op, no log.
+
+**`HandleSoftkeySensorEW`:**
+- Scanner Array: SK5 → toggle `ScannerModeActive`; SK6 → toggle `ScannerModeBeam` (guarded: logs + no-op if not Active)
+- Prospecting Suite: SK5 → "SCAN triggered (no gameplay outcome)" logged; SK6 → decrement index; SK7 → increment index
+- Stealth/ECM: SK5 → toggle `StealthOn`
+
+**`HandleSoftkeyDefense`:**
+- Shield Generator: SK1–SK4 → select facing (fore/aft/port/starboard); SK5 → toggle `ShieldOn`
+- Point-Defense Turret: SK5 → toggle `PdEngaged`
+- Decoy/Flare: SK5 → `DecoyCount--` (floor 0)
+
+**Encoder A extensions** (beyond utility, which is unchanged):
+- Scanner Array: ±`Intensity` 0.05/detent, 0–1 clamp (range)
+- Prospecting Suite: ±ore filter index via `StepProspectingIndex`
+- Stealth/ECM: ±`Intensity` 0.05/detent (frequency)
+- Shield Generator: ±`ShieldStrengths[ShieldSelectedFacing]` 0.05/detent → **calls `PublishHardpointModule`** (shield_strengths is in module state)
+- All others: no-op
+
+---
+
+### Task 4 — `PublishHardpointModule` (per-module payload)
+
+Replaced inline serialization with `BuildModulePayload(HardpointSlot hp, int slot)` returning `Dictionary<string, object?>`. Each module includes only the fields listed in the contract table:
+
+| Module | Extra fields |
+|---|---|
+| Mining Laser | none |
+| Cutting/Welding Torch | `mode` |
+| Grapple/Winch Rig | `attached` |
+| Standard Pod | `fill_pct`, `contents` |
+| Reefer Pod | `fill_pct`, `contents`, `temp_c`, `temp_min`, `temp_max` |
+| Ore Hopper | `fill_pct`, `contents` |
+| Long-range Scanner Array | `scanner_mode_active`, `scanner_mode_beam` |
+| Prospecting Suite | none |
+| Stealth/ECM Package | `stealth_on` |
+| Deflector Shield Generator | `shield_on`, `shield_selected_facing`, `shield_strengths` |
+| Point-Defense Turret Pod | `pd_engaged` |
+| Decoy/Flare Dispenser | `missile_lock_warning`, `decoy_count` |
+| empty | none |
+
+Example payloads from `mosquitto_sub -t 'coldorbit/output/hardpoints/+/module' -v`:
+
+**cargo_storage / Reefer Pod (slot 2):**
 ```json
 {
-  "armed": false,
-  "throttle": 0.0,
-  "mix": 0.0,
-  "rcs_enabled": true,
-  "dampeners_enabled": true,
-  "reverse_enabled": false,
-  "engines": [
-    { "id": "port",      "power_kw": 0, "temp_c": 0 },
-    { "id": "centre",    "power_kw": 0, "temp_c": 0 },
-    { "id": "starboard", "power_kw": 0, "temp_c": 0 }
-  ],
-  "velocity_ms": 0.0,
-  "acceleration_ms2": 0.0,
-  "soi_body": "Unknown"
+  "slot": 2, "category": "cargo_storage", "name": "Reefer Pod",
+  "armed": false, "updated_at": "2026-08-07T12:00:00Z",
+  "fill_pct": 0, "contents": null, "temp_c": null, "temp_min": null, "temp_max": null
 }
 ```
 
-Old payload fields removed: `overheated` (now in alerts), `updated_at`.
-
-### Field reality vs simplification
-
-| Field | Reality |
-|---|---|
-| `armed` | **Placeholder `false`** — no propulsion Arm state in sim yet |
-| `throttle` | Real: abs of keyboard thrust input (0 or 1 from binary W/S keys) |
-| `mix` | Real: interpolated propellant mix |
-| `rcs_enabled`, `dampeners_enabled` | Real |
-| `reverse_enabled` | Real: `true` while `thrust_reverse` key (S) is held |
-| `engines[].power_kw` | Simplified: all three share the same value (`throttle × PowerPerEnginekW`, export default 1500 kW, so 0–1500 kW per engine) |
-| `engines[].temp_c` | Simplified: all three share the single `_engineTemp` value (cast int °C) |
-| `velocity_ms` | Real: `LinearVelocity.Length()` |
-| `acceleration_ms2` | Real: velocity delta / dt, can go negative when decelerating |
-| `soi_body` | **Hardcoded `"Unknown"`** — no gravity/SOI model |
-
-### Publish cadence change
-
-Previously on-change every physics frame. Now rate-limited to 10 Hz because the new
-continuous fields (velocity, temp, accel) change every frame and would flood the broker
-at ~60 publishes/sec. Old `_mqttLast*` tracking fields are removed.
-
----
-
-## FTL state (`coldorbit/output/ftl/state`)
-
-**v43 contract shape: confirmed compliant.**
-
-Published retained, QoS 1, at `TelemetryPublishRateHz` (10 Hz).
-
-### New payload shape
-
+**sensor_ew / Long-range Scanner Array (slot 1):**
 ```json
 {
-  "armed": false,
-  "phase": "idle",
-  "progress": 0.0,
-  "destination": null,
-  "range_au": 0.0,
-  "signal_lag_s": 0.0,
-  "power_kw": 0,
-  "power_max_kw": 500
+  "slot": 1, "category": "sensor_ew", "name": "Long-range Scanner Array",
+  "armed": true, "updated_at": "2026-08-07T12:00:00Z",
+  "scanner_mode_active": true, "scanner_mode_beam": false
 }
 ```
 
-### Cooldown phase: implemented
-
-`FtlPhase.Complete` is **removed** and replaced by `FtlPhase.Cooldown`.
-
-State machine: `Idle → Charging → Ready → Jumping → Cooldown → Idle`
-
-- **Abort path (overheat):** `Charging/Jumping → Cooldown` (was `→ Idle` in batch 7).  
-  Arm is force-cleared on abort, as before.
-- **Deliberate disarm:** `Charging/Ready → Idle` (unchanged — no fault, no cooldown).
-- **Cooldown guard:** Arm/VECTOR/Jump are no-ops during Cooldown.
-  The `switch` on `_ftlPhase` has a `Cooldown` case that only counts the timer.
-  Both action buttons are already disabled by `ControlPanelsWindow`'s
-  `phase != Idle` guard, so UI reflects this correctly.
-
-`FtlCooldownDuration` export, default `5f` seconds.
-
-### Signal lag: implemented
-
-`signal_lag_s` behaviour:
-
-| Phase | Value |
-|---|---|
-| Idle | `0.0` |
-| Charging | `(elapsed / duration) × MaxSignalLagS` (ramps 0 → max) |
-| Ready | `MaxSignalLagS` (held) |
-| Jumping | `MaxSignalLagS` (held — the "jump moment") |
-| Cooldown | `(1 − elapsed/duration) × MaxSignalLagS` (decays max → 0) |
-
-`MaxSignalLagS` export, default `4.0f`.
-
-### Progress field
-
-| Phase | Value |
-|---|---|
-| Idle | `0.0` |
-| Charging | `elapsed / duration` (0 → 1) |
-| Ready | `1.0` |
-| Jumping | `0.0` |
-| Cooldown | `1.0 − elapsed/duration` (1 → 0) |
-
-### Field reality vs simplification
-
-| Field | Reality |
-|---|---|
-| `armed` | Real |
-| `phase` | Real (`"idle"`, `"charging"`, `"ready"`, `"jumping"`, `"cooldown"`) |
-| `progress` | Real (see table above) |
-| `destination` | Simplified: string name from `FtlState.Destinations[]` when armed, else `null`. 5 entries: `Sol`, `Alpha Centauri`, `Wolf 359`, `Tau Ceti`, `Proxima Centauri` |
-| `range_au` | Simplified: fixed fiction per destination (`0.5 / 1.4 / 2.8 / 4.1 / 7.2 AU`). `0.0` when not armed |
-| `signal_lag_s` | Real (see above) |
-| `power_kw` | **Placeholder:** `0` at Idle, `340` otherwise |
-| `power_max_kw` | **Hardcoded:** `500` |
-
-### ControlPanelsWindow FTL UI changes
-
-Adjusted for Cooldown replacing Complete:
-- VECTOR LED: orange during Charging/Ready/Jumping (no change); off during Cooldown
-- JUMP LED: blinking green during Jumping, **solid green during Cooldown** (completion signal)
-- Status label: `"COOLDOWN"` during Cooldown phase
-- VECTOR button: disabled when `phase != Idle` (includes Cooldown — no change needed)
-- JUMP button: disabled when `phase != Ready` (no change needed)
+**defense / Deflector Shield Generator (slot 3):**
+```json
+{
+  "slot": 3, "category": "defense", "name": "Deflector Shield Generator",
+  "armed": true, "updated_at": "2026-08-07T12:00:00Z",
+  "shield_on": true, "shield_selected_facing": "fore",
+  "shield_strengths": {"fore": 0.7, "aft": 0.5, "port": 0.5, "starboard": 0.5}
+}
+```
 
 ---
 
-## Alerts (`coldorbit/output/alerts`)
+### Task 5 — `PublishHardpointTelemetry` (all modules, correct units)
 
-**New topic — implemented.**
+**Utility tool telemetry corrected to real units** (batch 12 used % — this is the spec update):
+- Mining Laser / Cutting/Welding Torch: `INTNS`, `Intensity×500`, `kW`, 0–500
+- Grapple/Winch Rig: `LEN`, `Intensity×200`, `m`, 0–200
 
-Published retained, QoS 1. Full array on every change. `[]` when no alerts active.
+New modules:
+- Long-range Scanner Array: `RANGE`, `Intensity×500`, `km`, 0–500
+- Prospecting Suite: `IDX`, `round(Intensity×4)`, `""`, 0–4
+- Stealth/ECM Package: `FREQ`, `Intensity×100`, `MHz`, 0–100
+- Deflector Shield Generator: `STR`, `ShieldStrengths[ShieldSelectedFacing]×100`, `%`, 0–100
 
-Managed by `PlayerShip.UpdateAlerts()`, called every physics frame, publishes only on
-transitions (raise or clear). Also republished by `SimBus.PublishCurrentAlerts()` on
-every broker reconnect so the touchscreen recovers correct state after a broker restart.
+Omitted (no publish): Standard Pod, Reefer Pod, Ore Hopper, Point-Defense Turret Pod, Decoy/Flare Dispenser, empty.
 
-### Alert IDs: stable
-
-| Alert | Stable ID | Severity | System | Message |
-|---|---|---|---|---|
-| Propulsion overheat | `alert_engines_overheat` | `warning` | `engines` | `ENGINE OVERHEAT` |
-| FTL charge aborted | `alert_ftl_aborted` | `caution` | `ftl` | `FTL CHARGE ABORTED` |
-
-IDs are string literals. A second instance of the same alert (e.g. second overheat
-event) reuses the same ID — correct, since only one of each can be active at a time.
-
-### Raise/clear conditions
-
-**Overheat:** raised on `false→true` transition of `_propulsionOverheated`; cleared on
-`true→false`. Sourced from the existing `HandleThrust` temperature model.
-
-**FTL aborted:** raised on `false→true` transition of `_ftlAborted`; cleared when
-`_ftlAborted` is reset to `false` at the start of a new Charging attempt (i.e. when a
-new VECTOR press succeeds). This matches "clear when a new VECTOR press clears it."
+Example from `mosquitto_sub -t 'coldorbit/output/hardpoints/+/telemetry' -v`:
+```json
+{"slot":1,"label":"INTNS","value":125.0,"unit":"kW","min":0,"max":500,"active":false,"mode":null}
+{"slot":3,"label":"STR","value":70.0,"unit":"%","min":0,"max":100,"active":false,"mode":null}
+```
 
 ---
 
-## Stub topics
+### Task 6 — Admin panel updates
 
-All published from `SimBus.PublishStartupStubs()` on every broker connection.
-All retained, QoS 1. **MOCK DATA — no real sim logic for any of these systems.**
+`KnownModules` updated to correct contract names:
+- cargo: Standard Pod / Reefer Pod / Ore Hopper
+- sensor_ew: Long-range Scanner Array / Prospecting Suite / Stealth/ECM Package
+- defense: Deflector Shield Generator / Point-Defense Turret Pod / Decoy/Flare Dispenser
 
-| Topic(s) | Notes |
-|---|---|
-| `coldorbit/output/engineering/<system>/state` × 9 | `health: 100`, `disabled: false`, `repair_queue_position: null`, `effects: []`, `repair_eta_seconds: null`. Power-bearing systems (`weapons`, `engines`, `ftl`, `utility_1`–`4`): `power_allocated: 200`, `power_unit: "kW"`, `power_max: 500`. `reactor` and `hull`: power fields null |
-| `coldorbit/output/comms/log` | 2-message array (1 incoming / 1 outgoing) |
-| `coldorbit/output/comms/targets` | 1-contact array: `contact_001`, Harlan Voss, Independent, Light Freighter, 1240 m |
-| `coldorbit/output/turrets/dorsal/state` | `armed: false`, `fire_mode: "lethal"`, `lock_state: "none"`, targets null, `ammo_loaded: "Kinetic Slug"`, 2 ammo types |
-| `coldorbit/output/turrets/ventral/state` | Same shape |
-| `coldorbit/output/missiles/fore_port/state` | `armed: false`, `status: "loaded"`, `missile_type: "Seeking"`, `lock_state: "none"`, targets null |
-| `coldorbit/output/missiles/fore_starboard/state` | Same shape |
-| `coldorbit/output/missiles/aft_port/state` | Same shape |
-| `coldorbit/output/missiles/aft_starboard/state` | Same shape |
-| `coldorbit/output/hardpoints/1/module` – `4/module` | `category: "empty"`, `name: null`, `armed: false` |
+**Category-specific control groups** added per slot (show/hide via `UpdateHardpointControlVisibility`):
+- `UtilityGroup`: Mode dropdown, Attached check — visible only for `utility_tool`
+- `CargoGroup`: Fill% slider, Contents field; sub-group `ReeferGroup` (TempC/TempMin/TempMax) visible only for Reefer Pod
+- `SensorGroup`: Scanner Active/Beam checks, Stealth On check — visible only for `sensor_ew`
+- `DefenseGroup`: Shield On, Facing dropdown, 4× strength sliders, PD Engaged, Missile Lock Warning, Decoy Count — visible only for `defense`
 
-### `loadout-unlocked` — TEMPORARY
-
-`coldorbit/output/ship/loadout-unlocked` publishes `"false"` (bare string, matching
-the mock script's format) on startup. **Changed from the spec's suggested `true`**:
-publishing `true` on every reconnect would clobber a real game-state trigger and
-interfere with testing the locked state. Use `mock/set-loadout-unlocked.sh true`
-during development to open the loadout screen manually.
-
-**TODO:** replace stub with real game-state trigger when loadout unlock logic exists.
+All controls write directly to `SimBus.Instance.Hardpoints[slot-1]` then call `AdminUpdateHardpoint` which publishes. Live-mirrored via `SyncHardpointsFromBus` every frame with NoSignal/`_mirrorActive` guards.
 
 ---
 
-## SimBus restructuring
+## How to verify
 
-- `SimBus.AlertsState` — new class: `List<AlertEntry> Active`.
-- `SimBus.AlertEntry` — new sealed record: `Id`, `Severity`, `System`, `Message`, `TimestampS`.
-- `SimBus.Alerts` — new property, type `AlertsState`.
-- `SimBus.PropulsionState.PublishTelemetry` — signature extended: `accelerationMs2`,
-  `throttleInput`, `reverseEnabled` added.
-- `SimBus.FtlState.PublishTelemetry` — signature extended: `progress`, `signalLagS` added.
-  `chargeProgress` / `jumpProgress` kept for `ControlPanelsWindow` status label.
-- `SimBus.FtlState.Destinations` — extended to 5 entries (added `"Proxima Centauri"`).
-- `SimBus.FtlState.DestinationRangesAu` — new parallel AU array.
-- `FtlPhase.Complete` — **removed**; replaced by `FtlPhase.Cooldown`.
+**encoder_b (scanner bearing):**
+```bash
+mosquitto_pub -t coldorbit/input/hardpoints/1/arm -m '{"state":1,"updated_at":1000}'
+# First activate scanner mode (SK5 = Active, SK6 = Beam)
+mosquitto_pub -t coldorbit/input/hardpoints/1/softkey -m '{"key":"SK5","state":1,"updated_at":1001}'
+mosquitto_pub -t coldorbit/input/hardpoints/1/softkey -m '{"key":"SK6","state":1,"updated_at":1002}'
+# Now encoder_b should move bearing
+mosquitto_pub -t coldorbit/input/hardpoints/1/encoder_b -m '{"delta":10,"updated_at":1003}'
+# updated_at in module payload should change; no bearing field in payload (internal only)
+```
 
----
+**encoder_b (scanner Array, not in Active+Beam):**
+```bash
+mosquitto_pub -t coldorbit/input/hardpoints/1/encoder_b -m '{"delta":5,"updated_at":2000}'
+# GD.Print: "encoder_b slot 1 (Long-range Scanner Array) — ignored, not Active+Beam"
+```
 
-## Judgment calls and deviations
+**Shield strength via encoder_a:**
+```bash
+mosquitto_pub -t coldorbit/input/hardpoints/3/arm -m '{"state":1,"updated_at":1000}'
+mosquitto_pub -t coldorbit/input/hardpoints/3/encoder_a -m '{"delta":3,"updated_at":1001}'
+# Module payload should show shield_strengths.fore updated by +0.15
+```
 
-1. **`loadout-unlocked` publishes `"false"`** — see above.
+**Decoy launch:**
+```bash
+mosquitto_pub -t coldorbit/input/hardpoints/4/arm -m '{"state":1,"updated_at":1000}'
+mosquitto_pub -t coldorbit/input/hardpoints/4/softkey -m '{"key":"SK5","state":1,"updated_at":1001}'
+# Module payload: "decoy_count": 11
+```
 
-2. **Propulsion state publish rate** — rate-limited at 10 Hz (not every-change) because
-   continuous fields make every-change equivalent to every-frame.
-
-3. **`power_kw` in FTL** — `0` at Idle, `340` otherwise (not a flat `340` everywhere).
-
-4. **`acceleration_ms2` can go negative** — velocity delta / dt is signed. Correct
-   physics; will be noisy at low speeds due to Godot's frame jitter.
-
-5. **All three engine `temp_c` values are identical** — one thermal model; spec permits this.
-
-6. **CS8632 nullable warnings** — 11 warnings from `?` annotations without `#nullable
-   enable`. Correct at runtime. Fix by adding `<Nullable>enable</Nullable>` to
-   `sim-core.csproj` when/if the project adopts nullable reference types.
-
----
-
-## Not done this batch (per spec)
-
-- Subscribing to touchscreen input topics (loadout confirm, turret ammo/missile type select)
-- Engineering repair queue logic
-- Real turret/missile/comms/hardpoint game logic
-- Godot `ControlPanelsWindow` UI changes beyond FTL Cooldown LED/label fixes
-- Hardpoint telemetry topics (`/telemetry`, not `/module`)
-- Gravity/SOI model (`soi_body` remains `"Unknown"`)
+**Telemetry units (utility tools):**
+```bash
+mosquitto_sub -t 'coldorbit/output/hardpoints/+/telemetry' -v
+# Expect "unit":"kW" max 500 for Mining Laser/Torch, "unit":"m" max 200 for Grapple
+```
 
 ---
 
-## Files changed
+## SKs that resulted in "log and ignore"
 
-- [`scripts/SimBus.cs`](scripts/SimBus.cs) — `AlertsState`/`AlertEntry` types; `Alerts`
-  property; `PropulsionState`/`FtlState` signature extensions; 5th destination + AU array;
-  `FtlPhase.Cooldown` (replaces `Complete`); `PublishStartupStubs()`, `PublishCurrentAlerts()`,
-  `PublishEngineeringStubs()`, `PublishCommsStubs()`, `PublishTurretStubs()`,
-  `PublishMissileStubs()`, `PublishHardpointStubs()` in `OnMqttConnected`.
-- [`scripts/PlayerShip.cs`](scripts/PlayerShip.cs) — `PowerPerEnginekW`, `FtlCooldownDuration`,
-  `MaxSignalLagS` exports; `_thrustInput`, `_reverseEnabled`, `_previousVelocity`,
-  `_ftlSignalLagS`, `_missionTimeS`, alert tracking fields; Cooldown phase in `HandleFtl`;
-  signal lag + progress calculation; `PublishTelemetry(dt)` extended; `PublishMqttState()`
-  now alerts-only; `PublishMqttTelemetry(dt)` now publishes propulsion + FTL state;
-  `PublishPropulsionState()` / `PublishFtlState()` rewritten for v43 payload;
-  `UpdateAlerts()` / `PublishAlertsIfChanged` alert management.
-- [`scripts/ControlPanelsWindow.cs`](scripts/ControlPanelsWindow.cs) — FTL LED/status
-  label updated for `FtlPhase.Cooldown`; `FtlPhase.Complete` references removed.
-
-## Versions tested against
-
-- Godot 4.7.1 (.NET / C#)
-- .NET 8.0 (`net8.0` target framework)
-- `Godot.NET.Sdk/4.7.1`
-- MQTTnet 5.2.0.1603
-- Mosquitto 2.1.2 (local broker)
-- Build: `dotnet build sim-core.csproj` → **0 errors**
-
-Runtime MQTT round-trip was verified in batch 6/7. No changes to transport layer this batch.
-Touchscreen rendering cannot be confirmed headless — start the broker, run `mock/mock-everything.sh`
-to compare baseline mock vs. live sim-core output.
+| Module | SK | Reason |
+|---|---|---|
+| Prospecting Suite | SK5 (SCAN) | No gameplay outcome yet — logged to GD.Print |
+| Long-range Scanner Array | SK6 when not Active | Guard: Beam mode only meaningful in Active mode |
+| Scanner Array encoder_b | encoder_b when not Active+Beam | Guard per contract |
+| cargo_storage any SK | All | No cargo manipulation inputs yet |
+| All sensor_ew modules | SKs not in contract | Log and ignore default case |
+| All defense modules | SKs not in contract | Log and ignore default case |
 
 ---
 
-Copy this file's contents into the Cold Orbit project conversation — the master plan
-doc lives in that conversation's Knowledge Base, not this repo.
+## Deviations and judgment calls
+
+- **`ScannerBearing` not in module state payload**: The contract table for Long-range Scanner Array lists only `scanner_mode_active` and `scanner_mode_beam`. Bearing is stored in `HardpointSlot.ScannerBearing` for potential future use but omitted from the MQTT payload. `PublishHardpointModule` is still called on bearing change (keeps `updated_at` fresh per handover note).
+- **encoder_a for Shield Generator calls `PublishHardpointModule`**: `shield_strengths` is in the module state, so changes to it (encoder_a on Shield Generator) trigger an immediate publish rather than waiting for the next telemetry tick. Other encoder_a changes (intensity-only) do not publish module state.
+- **Prospecting Suite `Intensity` storage**: Stored as normalized 0–1 (consistent with other modules). Integer index 0–4 is `round(Intensity × 4)`. Encoder and softkey both work through `StepProspectingIndex` which converts round-trip. This means the admin Intensity slider (0–1) maps correctly to indices 0–4.
+- **MissileLockWarning stays `false`**: Not driven by any gameplay mechanic yet. Admin panel exposes a checkbox for test injection, noted as test-only in the label.
+- **cargo_storage SKs**: Silent no-op (no log needed per handover).
+
+## TODOs for future batches
+- Wire `ScannerBearing` into telemetry or module state once the display panel has a bearing readout
+- Implement SCAN gameplay for Prospecting Suite SK5 (currently logged/ignored)
+- Implement `MissileLockWarning` from gameplay (missile tracking system)
+- Confirm loadout payload shape with display client (assumed `{"slots":{"1":{...}}}`)

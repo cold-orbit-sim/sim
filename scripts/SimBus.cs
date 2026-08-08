@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Godot;
 using MQTTnet.Protocol;
 
@@ -31,6 +33,18 @@ public partial class SimBus : Node
     public AlertsState Alerts { get; } = new();
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
+    // Default loadout: three utility tools in slots 1-3, slot 4 empty.
+    // Overwritten on receipt of coldorbit/input/ship/loadout.
+    public HardpointSlot[] Hardpoints { get; } = new HardpointSlot[4]
+    {
+        new() { Category = "utility_tool", Name = "Mining Laser" },
+        new() { Category = "utility_tool", Name = "Cutting/Welding Torch", Mode = "weld" },
+        new() { Category = "utility_tool", Name = "Grapple/Winch Rig" },
+        new() { Category = "empty",        Name = null },
+    };
+
+    private float _hardpointTelemetryAccumulator;
+
     private static readonly HashSet<string> ValidTouchscreenModes = new()
     {
         "engineering", "propulsion", "ftl", "turrets", "missiles", "comms", "hardpoints",
@@ -44,6 +58,14 @@ public partial class SimBus : Node
         // Register subscription and wire events before Start() so the
         // filters and callbacks are in place before the first connect fires.
         Mqtt.Subscribe("coldorbit/input/touchscreen/+");
+        Mqtt.Subscribe("coldorbit/input/comms/master_warn");
+        Mqtt.Subscribe("coldorbit/input/comms/master_caut");
+        Mqtt.Subscribe("coldorbit/input/alerts/acknowledge");
+        Mqtt.Subscribe("coldorbit/input/ship/loadout");
+        Mqtt.Subscribe("coldorbit/input/hardpoints/+/arm");
+        Mqtt.Subscribe("coldorbit/input/hardpoints/+/softkey");
+        Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_a");
+        Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_b");
         Mqtt.MessageReceived += OnMqttMessageReceived;
         Mqtt.Connected += OnMqttConnected;
 
@@ -55,26 +77,41 @@ public partial class SimBus : Node
         Mqtt?.Stop();
     }
 
+    // Publishes hardpoint telemetry at 10 Hz from the Godot main thread.
+    public override void _Process(double delta)
+    {
+        const float hz = 10f;
+        _hardpointTelemetryAccumulator += (float)delta;
+        if (_hardpointTelemetryAccumulator < 1f / hz) return;
+        _hardpointTelemetryAccumulator = 0f;
+        for (int slot = 1; slot <= 4; slot++)
+            PublishHardpointTelemetry(slot);
+    }
+
     // Called on the MQTT background thread whenever a message arrives on any
-    // subscribed topic. Routes touchscreen input to mode-select logic; ignores
-    // other topics (none registered yet, but safe against future additions).
+    // subscribed topic.
     private void OnMqttMessageReceived(string topic, string payload)
     {
-        const string touchscreenPrefix = "coldorbit/input/touchscreen/";
-        if (!topic.StartsWith(touchscreenPrefix, System.StringComparison.Ordinal)) return;
-
-        var mode = topic.Substring(touchscreenPrefix.Length);
-        if (!ValidTouchscreenModes.Contains(mode))
+        // Route topics that don't carry a `state` field before the common parse.
+        if (topic == "coldorbit/input/ship/loadout")
         {
-            GD.PrintErr($"SimBus: unknown touchscreen mode '{mode}' on topic {topic}");
+            HandleLoadoutConfirm(payload);
             return;
         }
 
+        const string hpPrefix = "coldorbit/input/hardpoints/";
+        if (topic.StartsWith(hpPrefix, StringComparison.Ordinal))
+        {
+            HandleHardpointInput(topic.Substring(hpPrefix.Length), payload);
+            return;
+        }
+
+        // All remaining topics use a `state` field.
+        int state;
         try
         {
             using var doc = JsonDocument.Parse(payload);
-            if (!doc.RootElement.TryGetProperty("state", out var stateProp) || stateProp.GetInt32() != 1)
-                return; // state:0 (release) is logged but not acted on
+            state = doc.RootElement.TryGetProperty("state", out var s) ? s.GetInt32() : -1;
         }
         catch (JsonException ex)
         {
@@ -82,12 +119,397 @@ public partial class SimBus : Node
             return;
         }
 
-        Touchscreen.Mode = mode;
-        Mqtt.Publish(
-            "coldorbit/output/touchscreen/mode",
-            mode,
-            MqttQualityOfServiceLevel.AtLeastOnce,
-            retain: true);
+        const string touchscreenPrefix = "coldorbit/input/touchscreen/";
+        if (topic.StartsWith(touchscreenPrefix, StringComparison.Ordinal))
+        {
+            if (state != 1) return;
+            var mode = topic.Substring(touchscreenPrefix.Length);
+            if (!ValidTouchscreenModes.Contains(mode))
+            {
+                GD.PrintErr($"SimBus: unknown touchscreen mode '{mode}' on topic {topic}");
+                return;
+            }
+            Touchscreen.Mode = mode;
+            Mqtt.Publish(
+                "coldorbit/output/touchscreen/mode",
+                mode,
+                MqttQualityOfServiceLevel.AtLeastOnce,
+                retain: true);
+            return;
+        }
+
+        // Alert-acknowledgement topics — act on press only (state:0 is no-op).
+        if (state != 1) return;
+
+        switch (topic)
+        {
+            case "coldorbit/input/comms/master_warn":
+                // Master Warn acks both warnings and cautions (higher-severity button
+                // implies pilot has seen the worst — §3.1b).
+                AcknowledgeAlerts(a => a.Severity == "warning" || a.Severity == "caution");
+                PublishCurrentAlerts();
+                break;
+            case "coldorbit/input/comms/master_caut":
+                AcknowledgeAlerts(a => a.Severity == "caution");
+                PublishCurrentAlerts();
+                break;
+            case "coldorbit/input/alerts/acknowledge":
+                AcknowledgeAlerts(_ => true);
+                PublishCurrentAlerts();
+                break;
+            default:
+                GD.PrintErr($"SimBus: unhandled topic {topic}");
+                break;
+        }
+    }
+
+    // Parses loadout confirm and updates Hardpoints[]. Resets all operational
+    // state (armed/active/mode/attached and all category-specific fields) on
+    // each slot that changes so stale state doesn't bleed across loadouts.
+    private void HandleLoadoutConfirm(string payload)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("slots", out var slots)) return;
+            foreach (var prop in slots.EnumerateObject())
+            {
+                if (!int.TryParse(prop.Name, out int slotNum) || slotNum < 1 || slotNum > 4) continue;
+                var v = prop.Value;
+                var hp = Hardpoints[slotNum - 1];
+                hp.Category = v.TryGetProperty("category", out var cat) ? cat.GetString() ?? "empty" : "empty";
+                hp.Name = v.TryGetProperty("name", out var name) && name.ValueKind != JsonValueKind.Null
+                    ? name.GetString() : null;
+                // Base reset
+                hp.Armed     = false;
+                hp.Active    = false;
+                hp.Intensity = 0f;
+                hp.Mode      = hp.Name == "Cutting/Welding Torch" ? "weld" : null;
+                hp.Attached  = null;
+                // Cargo/Storage reset
+                hp.FillPct   = 0f;
+                hp.Contents  = null;
+                hp.TempC     = null;
+                hp.TempMin   = null;
+                hp.TempMax   = null;
+                // Sensor/EW reset
+                hp.ScannerModeActive = false;
+                hp.ScannerModeBeam   = false;
+                hp.ScannerBearing    = 0f;
+                hp.StealthOn         = false;
+                // Defense reset
+                hp.ShieldOn             = false;
+                hp.ShieldSelectedFacing = "fore";
+                hp.ShieldStrengths      = new() { {"fore",0.5f},{"aft",0.5f},{"port",0.5f},{"starboard",0.5f} };
+                hp.PdEngaged            = false;
+                hp.MissileLockWarning   = false;
+                hp.DecoyCount           = 12;
+                PublishHardpointModule(slotNum);
+            }
+        }
+        catch (JsonException ex)
+        {
+            GD.PrintErr($"SimBus: malformed loadout payload: {ex.Message}");
+        }
+    }
+
+    // Routes hardpoint input sub-topics: <slot>/arm, <slot>/softkey,
+    // <slot>/encoder_a, <slot>/encoder_b.
+    private void HandleHardpointInput(string subPath, string payload)
+    {
+        var sep = subPath.IndexOf('/');
+        if (sep < 0 || !int.TryParse(subPath.Substring(0, sep), out int slot) || slot < 1 || slot > 4)
+        {
+            GD.PrintErr($"SimBus: invalid hardpoint topic: hardpoints/{subPath}");
+            return;
+        }
+        string subTopic = subPath.Substring(sep + 1);
+        var hp = Hardpoints[slot - 1];
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+
+            switch (subTopic)
+            {
+                case "arm":
+                    int armState = root.TryGetProperty("state", out var s) ? s.GetInt32() : -1;
+                    hp.Armed = armState == 1;
+                    PublishHardpointModule(slot);
+                    break;
+
+                case "softkey":
+                    if (!hp.Armed) return;
+                    int skState = root.TryGetProperty("state", out var ss) ? ss.GetInt32() : -1;
+                    if (skState != 1) return; // press only
+                    string key = root.TryGetProperty("key", out var k) ? k.GetString() ?? "" : "";
+                    HandleSoftkey(hp, key, slot);
+                    break;
+
+                case "encoder_a":
+                    int deltaA = root.TryGetProperty("delta", out var da) ? da.GetInt32() : 0;
+                    HandleEncoderA(hp, deltaA, slot);
+                    break;
+
+                case "encoder_b":
+                    int deltaB = root.TryGetProperty("delta", out var db) ? db.GetInt32() : 0;
+                    HandleEncoderB(hp, deltaB, slot);
+                    break;
+
+                default:
+                    GD.PrintErr($"SimBus: unknown hardpoint sub-topic '{subTopic}'");
+                    break;
+            }
+        }
+        catch (JsonException ex)
+        {
+            GD.PrintErr($"SimBus: malformed hardpoint payload on {subTopic}: {ex.Message}");
+        }
+    }
+
+    // Dispatches a soft-key press to the correct category handler.
+    // All handlers guard on Armed == true (checked by caller).
+    private void HandleSoftkey(HardpointSlot hp, string key, int slot)
+    {
+        switch (hp.Category)
+        {
+            case "utility_tool":
+                HandleSoftkeyUtilityTool(hp, key, slot);
+                break;
+            case "cargo_storage":
+                // All SKs ignored — no cargo-manipulation inputs yet.
+                break;
+            case "sensor_ew":
+                HandleSoftkeySensorEW(hp, key, slot);
+                break;
+            case "defense":
+                HandleSoftkeyDefense(hp, key, slot);
+                break;
+            default:
+                GD.Print($"SimBus: softkey {key} slot {slot} (category={hp.Category}) — ignored");
+                break;
+        }
+    }
+
+    private void HandleSoftkeyUtilityTool(HardpointSlot hp, string key, int slot)
+    {
+        switch (key)
+        {
+            case "SK5":                             // ON / LAUNCH
+                hp.Active = true;
+                if (hp.Name == "Grapple/Winch Rig") hp.Attached = true;
+                break;
+            case "SK6":                             // OFF / RELEASE
+                hp.Active = false;
+                if (hp.Name == "Grapple/Winch Rig") hp.Attached = false;
+                break;
+            case "SK3":                             // WELD
+                if (hp.Name == "Cutting/Welding Torch") hp.Mode = "weld";
+                break;
+            case "SK7":                             // CUT
+                if (hp.Name == "Cutting/Welding Torch") hp.Mode = "cut";
+                break;
+            case "SK1": case "SK2": case "SK4": case "SK8":  // directional aim
+                GD.Print($"SimBus: directional aim {key} slot {slot} (no state modelled this batch)");
+                break;
+            default:
+                GD.PrintErr($"SimBus: unknown softkey '{key}' slot {slot} (utility_tool)");
+                break;
+        }
+        PublishHardpointModule(slot);
+    }
+
+    private void HandleSoftkeySensorEW(HardpointSlot hp, string key, int slot)
+    {
+        switch (hp.Name)
+        {
+            case "Long-range Scanner Array":
+                switch (key)
+                {
+                    case "SK5":
+                        hp.ScannerModeActive = !hp.ScannerModeActive;
+                        break;
+                    case "SK6":
+                        if (hp.ScannerModeActive)
+                            hp.ScannerModeBeam = !hp.ScannerModeBeam;
+                        else
+                            GD.Print($"SimBus: SK6 slot {slot} (Scanner Array) — ignored, not in Active mode");
+                        break;
+                    default:
+                        GD.Print($"SimBus: softkey {key} slot {slot} (Scanner Array) — ignored");
+                        break;
+                }
+                break;
+
+            case "Prospecting Suite":
+                switch (key)
+                {
+                    case "SK5":
+                        // SCAN triggered — no gameplay outcome yet
+                        GD.Print($"SimBus: SK5 slot {slot} (Prospecting Suite) — SCAN triggered (no gameplay outcome)");
+                        break;
+                    case "SK6":
+                        StepProspectingIndex(hp, -1);
+                        break;
+                    case "SK7":
+                        StepProspectingIndex(hp, +1);
+                        break;
+                    default:
+                        GD.Print($"SimBus: softkey {key} slot {slot} (Prospecting Suite) — ignored");
+                        break;
+                }
+                break;
+
+            case "Stealth/ECM Package":
+                switch (key)
+                {
+                    case "SK5":
+                        hp.StealthOn = !hp.StealthOn;
+                        break;
+                    default:
+                        GD.Print($"SimBus: softkey {key} slot {slot} (Stealth/ECM) — ignored");
+                        break;
+                }
+                break;
+
+            default:
+                GD.Print($"SimBus: softkey {key} slot {slot} (sensor_ew/{hp.Name}) — ignored");
+                break;
+        }
+        PublishHardpointModule(slot);
+    }
+
+    private void HandleSoftkeyDefense(HardpointSlot hp, string key, int slot)
+    {
+        switch (hp.Name)
+        {
+            case "Deflector Shield Generator":
+                switch (key)
+                {
+                    case "SK1": hp.ShieldSelectedFacing = "fore";      break;
+                    case "SK2": hp.ShieldSelectedFacing = "aft";       break;
+                    case "SK3": hp.ShieldSelectedFacing = "port";      break;
+                    case "SK4": hp.ShieldSelectedFacing = "starboard"; break;
+                    case "SK5": hp.ShieldOn = !hp.ShieldOn;            break;
+                    default:
+                        GD.Print($"SimBus: softkey {key} slot {slot} (Shield Generator) — ignored");
+                        break;
+                }
+                break;
+
+            case "Point-Defense Turret Pod":
+                switch (key)
+                {
+                    case "SK5": hp.PdEngaged = !hp.PdEngaged; break;
+                    default:
+                        GD.Print($"SimBus: softkey {key} slot {slot} (PD Turret) — ignored");
+                        break;
+                }
+                break;
+
+            case "Decoy/Flare Dispenser":
+                switch (key)
+                {
+                    case "SK5":
+                        if (hp.DecoyCount > 0) hp.DecoyCount--;
+                        break;
+                    default:
+                        GD.Print($"SimBus: softkey {key} slot {slot} (Decoy/Flare) — ignored");
+                        break;
+                }
+                break;
+
+            default:
+                GD.Print($"SimBus: softkey {key} slot {slot} (defense/{hp.Name}) — ignored");
+                break;
+        }
+        PublishHardpointModule(slot);
+    }
+
+    // Encoder A: primary axis. Intensity for most modules, index-step for
+    // Prospecting Suite, shield-strength-on-selected-facing for Shield Generator.
+    // Publishes module state only for Shield Generator (shield_strengths is in
+    // module state); all other changes are reflected at the 10 Hz telemetry cadence.
+    private void HandleEncoderA(HardpointSlot hp, int delta, int slot)
+    {
+        switch (hp.Name)
+        {
+            case "Mining Laser":
+            case "Cutting/Welding Torch":
+            case "Grapple/Winch Rig":
+            case "Long-range Scanner Array":
+            case "Stealth/ECM Package":
+                hp.Intensity = Mathf.Clamp(hp.Intensity + delta * 0.05f, 0f, 1f);
+                break;
+
+            case "Prospecting Suite":
+                StepProspectingIndex(hp, delta);
+                break;
+
+            case "Deflector Shield Generator":
+                var f = hp.ShieldSelectedFacing;
+                hp.ShieldStrengths[f] = Mathf.Clamp(hp.ShieldStrengths[f] + delta * 0.05f, 0f, 1f);
+                PublishHardpointModule(slot);
+                break;
+
+            // Point-Defense Turret, Decoy/Flare, cargo, empty: ignored.
+        }
+    }
+
+    // Encoder B: secondary axis per module. Scanner bearing (Active+Beam only),
+    // ore filter index for Prospecting, frequency for Stealth. All others ignored.
+    // Scanner bearing triggers a module publish even though bearing is not in
+    // the module state payload (keeps updated_at fresh per spec note).
+    private void HandleEncoderB(HardpointSlot hp, int delta, int slot)
+    {
+        switch (hp.Name)
+        {
+            case "Long-range Scanner Array":
+                if (!hp.ScannerModeActive || !hp.ScannerModeBeam)
+                {
+                    GD.Print($"SimBus: encoder_b slot {slot} (Scanner Array) — ignored, not Active+Beam");
+                    return;
+                }
+                hp.ScannerBearing = (hp.ScannerBearing + delta) % 360f;
+                if (hp.ScannerBearing < 0f) hp.ScannerBearing += 360f;
+                PublishHardpointModule(slot);
+                break;
+
+            case "Prospecting Suite":
+                StepProspectingIndex(hp, delta);
+                break;
+
+            case "Stealth/ECM Package":
+                hp.Intensity = Mathf.Clamp(hp.Intensity + delta * 0.05f, 0f, 1f);
+                break;
+
+            default:
+                GD.Print($"SimBus: encoder_b slot {slot} ({hp.Name ?? hp.Category}) — ignored");
+                break;
+        }
+    }
+
+    // Steps the Prospecting Suite ore-filter index by delta (±1 per detent).
+    // Intensity is stored as a 0–1 float where the integer index = round(val×4).
+    private static void StepProspectingIndex(HardpointSlot hp, int delta)
+    {
+        int cur = (int)MathF.Round(hp.Intensity * 4f);
+        hp.Intensity = Math.Clamp(cur + delta, 0, 4) / 4.0f;
+    }
+
+    // Sets Acknowledged = true on all active alerts matching the predicate.
+    // Called from the MQTT background thread; matches the threading model already
+    // established for Alerts.Active access in this class.
+    private void AcknowledgeAlerts(Func<AlertEntry, bool> predicate)
+    {
+        var active = Alerts.Active;
+        for (int i = 0; i < active.Count; i++)
+        {
+            if (predicate(active[i]) && !active[i].Acknowledged)
+                active[i] = active[i] with { Acknowledged = true };
+        }
     }
 
     // Publishes the current mode as the retained value immediately after each
@@ -108,6 +530,9 @@ public partial class SimBus : Node
             retain: true);
 
         PublishStartupStubs();
+        // Publish real hardpoint module state (replaces stubs from batch 8).
+        for (int slot = 1; slot <= 4; slot++)
+            PublishHardpointModule(slot);
         PublishCurrentAlerts();
     }
 
@@ -131,7 +556,7 @@ public partial class SimBus : Node
         PublishCommsStubs();
         PublishTurretStubs();
         PublishMissileStubs();
-        PublishHardpointStubs();
+        // Hardpoint stubs retired — real publish happens in OnMqttConnected.
 
         // TEMPORARY: always unlocked so the loadout screen is testable
         // without a game-state trigger. Replace with real lock/unlock logic.
@@ -270,21 +695,153 @@ public partial class SimBus : Node
         }
     }
 
-    private void PublishHardpointStubs()
+    // Publishes the retained module state for one hardpoint slot. Called on
+    // any state change (arm, softkey, loadout confirm, admin override).
+    // Per-module field inclusion follows the contract table — fields not listed
+    // for a module are omitted entirely from the payload.
+    public void PublishHardpointModule(int slot)
     {
-        // MOCK — §3.1b hardpoints contract. Replace with real module state when hardpoint system exists.
-        for (int slot = 1; slot <= 4; slot++)
+        var hp = Hardpoints[slot - 1];
+        string payload = JsonSerializer.Serialize(BuildModulePayload(hp, slot));
+        Mqtt.Publish($"coldorbit/output/hardpoints/{slot}/module", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // Builds the per-module state dictionary. Each module type includes only
+    // the fields listed in the contract table; all others are omitted.
+    private static Dictionary<string, object?> BuildModulePayload(HardpointSlot hp, int slot)
+    {
+        var d = new Dictionary<string, object?>
         {
-            var payload = JsonSerializer.Serialize(new
-            {
-                slot,
-                category = "empty",
-                name = (string?)null,
-                armed = false,
-                updated_at = "2026-08-05T00:00:00Z",
-            });
-            Mqtt.Publish($"coldorbit/output/hardpoints/{slot}/module", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+            ["slot"]       = slot,
+            ["category"]   = hp.Category,
+            ["name"]       = hp.Name,
+            ["armed"]      = hp.Armed,
+            ["updated_at"] = DateTimeOffset.UtcNow.ToString("O"),
+        };
+
+        switch (hp.Name)
+        {
+            // utility_tool
+            case "Cutting/Welding Torch":
+                d["mode"] = hp.Mode;
+                break;
+            case "Grapple/Winch Rig":
+                d["attached"] = hp.Attached;
+                break;
+            // Mining Laser: no extra fields
+
+            // cargo_storage
+            case "Standard Pod":
+            case "Ore Hopper":
+                d["fill_pct"]  = hp.FillPct;
+                d["contents"]  = hp.Contents;
+                break;
+            case "Reefer Pod":
+                d["fill_pct"]  = hp.FillPct;
+                d["contents"]  = hp.Contents;
+                d["temp_c"]    = hp.TempC;
+                d["temp_min"]  = hp.TempMin;
+                d["temp_max"]  = hp.TempMax;
+                break;
+
+            // sensor_ew
+            case "Long-range Scanner Array":
+                d["scanner_mode_active"] = hp.ScannerModeActive;
+                d["scanner_mode_beam"]   = hp.ScannerModeBeam;
+                break;
+            case "Stealth/ECM Package":
+                d["stealth_on"] = hp.StealthOn;
+                break;
+            // Prospecting Suite: no extra fields (ore filter index in telemetry only)
+
+            // defense
+            case "Deflector Shield Generator":
+                d["shield_on"]              = hp.ShieldOn;
+                d["shield_selected_facing"] = hp.ShieldSelectedFacing;
+                d["shield_strengths"]       = hp.ShieldStrengths;
+                break;
+            case "Point-Defense Turret Pod":
+                d["pd_engaged"] = hp.PdEngaged;
+                break;
+            case "Decoy/Flare Dispenser":
+                d["missile_lock_warning"] = hp.MissileLockWarning;
+                d["decoy_count"]          = hp.DecoyCount;
+                break;
+
+            // empty, unknown: no extra fields
         }
+
+        return d;
+    }
+
+    // Publishes 10 Hz telemetry for one hardpoint slot. Cargo, point-defense, decoy,
+    // and empty slots omit the publish entirely — the display ignores missing topics
+    // better than stale zeroes.
+    // Utility tool telemetry uses real units (kW / m) per the batch 13 contract
+    // update (batch 12 published % which has been corrected here).
+    private void PublishHardpointTelemetry(int slot)
+    {
+        var hp = Hardpoints[slot - 1];
+        string label;
+        float  value;
+        string unit;
+        int    min = 0;
+        int    max;
+
+        switch (hp.Name)
+        {
+            case "Mining Laser":
+            case "Cutting/Welding Torch":
+                label = "INTNS";
+                value = MathF.Round(hp.Intensity * 500f, 1);
+                unit  = "kW";
+                max   = 500;
+                break;
+            case "Grapple/Winch Rig":
+                label = "LEN";
+                value = MathF.Round(hp.Intensity * 200f, 1);
+                unit  = "m";
+                max   = 200;
+                break;
+            case "Long-range Scanner Array":
+                label = "RANGE";
+                value = MathF.Round(hp.Intensity * 500f, 1);
+                unit  = "km";
+                max   = 500;
+                break;
+            case "Prospecting Suite":
+                label = "IDX";
+                value = MathF.Round(hp.Intensity * 4f);
+                unit  = "";
+                max   = 4;
+                break;
+            case "Stealth/ECM Package":
+                label = "FREQ";
+                value = MathF.Round(hp.Intensity * 100f, 1);
+                unit  = "MHz";
+                max   = 100;
+                break;
+            case "Deflector Shield Generator":
+                label = "STR";
+                value = MathF.Round(hp.ShieldStrengths[hp.ShieldSelectedFacing] * 100f, 1);
+                unit  = "%";
+                max   = 100;
+                break;
+            // Standard Pod, Reefer Pod, Ore Hopper, Point-Defense Turret Pod,
+            // Decoy/Flare Dispenser, empty: omit telemetry entirely.
+            default:
+                return;
+        }
+
+        string payload = JsonSerializer.Serialize(new
+        {
+            slot, label, value, unit, min, max,
+            active = hp.Active,
+            mode   = hp.Mode,
+        });
+        Mqtt.Publish($"coldorbit/output/hardpoints/{slot}/telemetry", payload,
+            MqttQualityOfServiceLevel.AtMostOnce, retain: false);
     }
 
     // ── State classes ────────────────────────────────────────────────────────
@@ -310,6 +867,15 @@ public partial class SimBus : Node
         // independently of that so a future damage/sabotage system can set it
         // too without any reader (e.g. FTL's jump-abort interrupt) changing.
         public bool IsPropulsionDisabled { get; private set; }
+
+        // Peak collision impulse (N) within the last 3 s. Zero when no recent impact.
+        // Written by PlayerShip.HandleCollision; read by PublishPropulsionState and
+        // the admin panel display. Placeholder until the damage system exists.
+        public float CollisionForceN { get; set; } = 0f;
+
+        // Set by AdminTriggerCollisionAlert(); PlayerShip.HandleCollision picks it up
+        // on the next physics frame so the alert fires through the normal path.
+        public float PendingAdminCollisionN { get; set; } = 0f;
 
         public void PublishTelemetry(
             float propellantMix, float engineTemp, bool overheated, bool propulsionDisabled,
@@ -363,6 +929,13 @@ public partial class SimBus : Node
             SignalLagS = signalLagS;
             Aborted = aborted;
         }
+
+        // Admin-panel override paths — force internal state for testing.
+        // PlayerShip.HandleFtl overwrites Phase on every physics frame, so
+        // a forced phase holds for at most one frame unless the FTL timer is
+        // also overridden (which requires PlayerShip changes, out of scope).
+        internal void AdminForcePhase(FtlPhase phase) { Phase = phase; }
+        internal void AdminForceAborted(bool aborted) { Aborted = aborted; }
     }
 
     // Current touchscreen display mode. Written by OnMqttMessageReceived (MQTT
@@ -382,15 +955,221 @@ public partial class SimBus : Node
         public List<AlertEntry> Active { get; } = new();
     }
 
+    // Per-slot hardpoint state. Written by MQTT input handlers and admin panel;
+    // read by publish methods and admin live-mirror.
+    public sealed class HardpointSlot
+    {
+        public string Category { get; set; } = "empty";
+        public string? Name    { get; set; }
+        public bool Armed      { get; set; }
+        public bool Active     { get; set; }
+        public float Intensity { get; set; }  // 0-1: intensity / cable length / filter index / range / freq
+        public string? Mode    { get; set; }  // "cut" | "weld" | null
+        public bool? Attached  { get; set; }  // grapple only; null for other modules
+
+        // --- Cargo/Storage ---
+        public float FillPct   { get; set; }         // 0–100
+        public string? Contents { get; set; }         // human-readable label, null when empty
+        public float? TempC    { get; set; }          // reefer only; null for other cargo
+        public float? TempMin  { get; set; }          // reefer only
+        public float? TempMax  { get; set; }          // reefer only
+
+        // --- Sensor/EW ---
+        public bool ScannerModeActive { get; set; }   // scanner array: true=Active, false=Passive
+        public bool ScannerModeBeam   { get; set; }   // scanner array: true=Beam, false=Pulse (Active mode only)
+        public float ScannerBearing   { get; set; }   // 0–360, wrapping; encoder_b Y axis
+        public bool StealthOn         { get; set; }   // stealth/ECM active state
+
+        // --- Defense ---
+        public bool ShieldOn                  { get; set; }
+        public string ShieldSelectedFacing    { get; set; } = "fore";  // "fore"|"aft"|"port"|"starboard"
+        public Dictionary<string, float> ShieldStrengths { get; set; } = new()
+        {
+            { "fore", 0.5f }, { "aft", 0.5f }, { "port", 0.5f }, { "starboard", 0.5f },
+        };
+        public bool PdEngaged          { get; set; }
+        public bool MissileLockWarning { get; set; }  // not set by gameplay yet
+        public int  DecoyCount         { get; set; } = 12;
+    }
+
     // Immutable alert entry. Id must be stable for the lifetime of a single
     // alert instance -- the touchscreen uses it to avoid re-animating an alert
-    // that's already visible.
+    // that's already visible. Acknowledged is set only by ack handlers, never
+    // by the raise path, and resets to false on every re-raise.
     public sealed record AlertEntry(
-        string Id,
-        string Severity,
-        string System,
-        string Message,
-        long TimestampS);
+        [property: JsonPropertyName("id")]           string Id,
+        [property: JsonPropertyName("severity")]     string Severity,
+        [property: JsonPropertyName("system")]       string System,
+        [property: JsonPropertyName("message")]      string Message,
+        [property: JsonPropertyName("timestamp_s")]  long TimestampS,
+        [property: JsonPropertyName("acknowledged")] bool Acknowledged = false);
+
+    // ── Admin-override publish methods ────────────────────────────────────────
+    // ADMIN OVERRIDE — called by AdminPanelWindow to push state directly to
+    // MQTT topics that have no real sim backing yet. Replace each method with
+    // real SimBus writes when the corresponding sim logic is added.
+
+    public void PublishAdminOverrideShipLoadout(bool unlocked)
+    {
+        Mqtt.Publish("coldorbit/output/ship/loadout-unlocked",
+            unlocked ? "true" : "false",
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideShipCallsign(string callsign)
+    {
+        Mqtt.Publish("coldorbit/output/ship/callsign", callsign,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // ADMIN OVERRIDE — publishes a modified propulsion-state payload with the
+    // given engine temperature and SOI body. PowerPerEnginekW (1500f) is
+    // duplicated from PlayerShip; no shared constant exists yet.
+    // PlayerShip.PublishMqttTelemetry overwrites this on the next telemetry
+    // tick (≤100 ms at TelemetryPublishRateHz = 10).
+    public void PublishAdminOverridePropulsionTemp(float tempC, string soiBody)
+    {
+        var p = Propulsion;
+        float enginePowerEach = p.ThrottleInput * 1500f;
+        int tempClamped = (int)Mathf.Clamp(tempC, 0f, 1000f);
+        string payload = JsonSerializer.Serialize(new
+        {
+            armed = false,
+            throttle = MathF.Round(p.ThrottleInput, 3),
+            mix = MathF.Round(p.PropellantMix, 3),
+            rcs_enabled = p.RcsEnabled,
+            dampeners_enabled = p.DampenersEnabled,
+            reverse_enabled = p.ReverseEnabled,
+            engines = new object[]
+            {
+                new { id = "port",      power_kw = (int)enginePowerEach, temp_c = tempClamped },
+                new { id = "centre",    power_kw = (int)enginePowerEach, temp_c = tempClamped },
+                new { id = "starboard", power_kw = (int)enginePowerEach, temp_c = tempClamped },
+            },
+            velocity_ms = MathF.Round(p.Velocity, 2),
+            acceleration_ms2 = MathF.Round(p.AccelerationMs2, 2),
+            soi_body = soiBody,
+        });
+        Mqtt.Publish("coldorbit/output/propulsion/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideEngineering(
+        string systemId, int health, bool disabled,
+        int? repairQueuePos, string[] effects, int? repairEtaS,
+        int? powerAllocated, int? powerMax)
+    {
+        // ADMIN OVERRIDE — replace when real sim logic exists
+        string? powerUnit = powerAllocated.HasValue ? "kW" : null;
+        string payload = JsonSerializer.Serialize(new
+        {
+            system    = systemId,
+            health,
+            power_allocated     = powerAllocated,
+            power_unit          = powerUnit,
+            power_max           = powerMax,
+            disabled,
+            repair_queue_position = repairQueuePos,
+            effects,
+            repair_eta_seconds  = repairEtaS,
+        });
+        Mqtt.Publish($"coldorbit/output/engineering/{systemId}/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideCommsLog(object[] messages)
+    {
+        // ADMIN OVERRIDE — replace when real sim logic exists
+        Mqtt.Publish("coldorbit/output/comms/log",
+            JsonSerializer.Serialize(messages),
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideCommsTargets(object[] contacts)
+    {
+        // ADMIN OVERRIDE — replace when real sim logic exists
+        Mqtt.Publish("coldorbit/output/comms/targets",
+            JsonSerializer.Serialize(contacts),
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideTurret(
+        string turret, bool armed, string fireMode, string lockState,
+        float? bearingDeg, string? targetName, string? targetClass,
+        string? targetAlliance, int? targetRangeM,
+        string ammoLoaded, int kineticCount, int empCount, float heat)
+    {
+        // ADMIN OVERRIDE — replace when real sim logic exists
+        string payload = JsonSerializer.Serialize(new
+        {
+            turret,
+            armed,
+            fire_mode        = fireMode,
+            lock_state       = lockState,
+            bearing_deg      = bearingDeg,
+            target_name      = targetName,
+            target_class     = targetClass,
+            target_alliance  = targetAlliance,
+            target_range_m   = targetRangeM,
+            ammo_loaded      = ammoLoaded,
+            ammo_remaining   = new object[]
+            {
+                new { type = "Kinetic Slug", count = kineticCount },
+                new { type = "EMP Round",    count = empCount },
+            },
+            heat = MathF.Round(heat, 3),
+        });
+        Mqtt.Publish($"coldorbit/output/turrets/{turret}/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideMissile(
+        string tube, bool armed, string status, string? missileType,
+        string lockState, string? targetName, string? targetClass,
+        string? targetAlliance, int? targetRangeM)
+    {
+        // ADMIN OVERRIDE — replace when real sim logic exists
+        string payload = JsonSerializer.Serialize(new
+        {
+            tube,
+            armed,
+            status,
+            missile_type     = missileType,
+            lock_state       = lockState,
+            target_name      = targetName,
+            target_class     = targetClass,
+            target_alliance  = targetAlliance,
+            target_range_m   = targetRangeM,
+        });
+        Mqtt.Publish($"coldorbit/output/missiles/{tube}/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // Fires a HULL IMPACT caution without a physics collision — for testing the
+    // alert path when flying into an obstacle is inconvenient. Picked up by
+    // PlayerShip.HandleCollision on the next frame so the alert follows the
+    // same code path as a real impact (3 s duration, MQTT publish, etc.).
+    public void AdminTriggerCollisionAlert()
+    {
+        Propulsion.PendingAdminCollisionN = 5001f; // just above default 5000 N threshold
+    }
+
+    // Admin writes base hardpoint fields directly to SimBus.Hardpoints and calls
+    // the real publish path. Category-specific fields (cargo/sensor/defense) are
+    // written directly to the slot by AdminPanelWindow before calling this method.
+    public void AdminUpdateHardpoint(int slot, string category, string? name,
+        bool armed, bool active, float intensity, string? mode, bool? attached)
+    {
+        var hp       = Hardpoints[slot - 1];
+        hp.Category  = category;
+        hp.Name      = name;
+        hp.Armed     = armed;
+        hp.Active    = active;
+        hp.Intensity = intensity;
+        hp.Mode      = mode;
+        hp.Attached  = attached;
+        PublishHardpointModule(slot);
+    }
 }
 
 // Master plan §2 / documentation/panel-control-designs.md "FTL" section:
