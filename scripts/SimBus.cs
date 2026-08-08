@@ -573,6 +573,7 @@ public partial class SimBus : Node
         PublishCommsStubs();
         PublishTurretStubs();
         PublishMissileStubs();
+        PublishRepairQueueStubs();
         // Hardpoint stubs retired — real publish happens in OnMqttConnected.
 
         // TEMPORARY: always unlocked so the loadout screen is testable
@@ -649,7 +650,7 @@ public partial class SimBus : Node
         var logPayload = JsonSerializer.Serialize(new object[]
         {
             new { id = "msg_001", direction = "incoming", sender = "Harlan Voss",
-                  text = "Nighthawk, this is Voss. You in position?", timestamp_s = 3600 },
+                  text = "Cold Orbit, this is Voss. You in position?", timestamp_s = 3600 },
             new { id = "msg_002", direction = "outgoing", sender = "player",
                   text = "Affirmative. Holding at waypoint delta.", timestamp_s = 3618 },
         });
@@ -710,6 +711,23 @@ public partial class SimBus : Node
             });
             Mqtt.Publish($"coldorbit/output/missiles/{tube}/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
         }
+    }
+
+    private void PublishRepairQueueStubs()
+    {
+        // MOCK — repair-queue contract. Ordered list of subsystems awaiting
+        // repair, published as a dedicated topic (the per-system
+        // repair_queue_position field on the engineering topic is a positional
+        // hint only; this queue is the order of work). Replace with real
+        // repair logic when the damage/repair system exists.
+        var queue = new object[]
+        {
+            new { system = "engines", status = "in_progress", repair_eta_seconds = (int?)180, health = 35 },
+            new { system = "ftl",     status = "queued",       repair_eta_seconds = (int?)60,  health = 70 },
+        };
+        Mqtt.Publish("coldorbit/output/repair/queue",
+            JsonSerializer.Serialize(queue),
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 
     // Publishes the retained module state for one hardpoint slot. Called on
@@ -1104,6 +1122,14 @@ public partial class SimBus : Node
             repair_eta_seconds  = repairEtaS,
         });
         Mqtt.Publish($"coldorbit/output/engineering/{systemId}/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    public void PublishAdminOverrideRepairQueue(object[] entries)
+    {
+        // ADMIN OVERRIDE — replace when real repair logic exists
+        Mqtt.Publish("coldorbit/output/repair/queue",
+            JsonSerializer.Serialize(entries),
             MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 

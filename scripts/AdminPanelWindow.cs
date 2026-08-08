@@ -77,6 +77,23 @@ public partial class AdminPanelWindow : Window
     }
     private readonly List<EngSysState> _engSystems = new();
 
+    // ── Repair queue — stub local state ───────────────────────────────────────
+    // Ordered list of subsystems awaiting repair. Publishes the
+    // coldorbit/output/repair/queue contract; no sim logic yet.
+    private sealed class RepairQueueEntry
+    {
+        public string System;   // weapons|engines|ftl|reactor|utility_1..4|hull
+        public string Status;   // queued|in_progress|blocked
+        public int RepairEtaS;  // 0 → null
+        public int Health;      // 0..100, current health % for context
+    }
+    private readonly List<RepairQueueEntry> _repairQueue = new();
+    private OptionButton _repairSystemOpt;
+    private OptionButton _repairStatusOpt;
+    private SpinBox _repairEtaBox;
+    private SpinBox _repairHealthBox;
+    private ItemList _repairItemList;
+
     // ── Comms — stub local state ──────────────────────────────────────────────
     private sealed class CommsMsg
     {
@@ -205,6 +222,7 @@ public partial class AdminPanelWindow : Window
         AddTab(tabs, "FTL",                 BuildFtlTab());
         AddTab(tabs, "Alerts",              BuildAlertsTab());
         AddTab(tabs, "Engineering",         BuildEngineeringTab());
+        AddTab(tabs, "Repair Queue",        BuildRepairQueueTab());
         AddTab(tabs, "Comms",               BuildCommsTab());
         AddTab(tabs, "Turrets",             BuildTurretsTab());
         AddTab(tabs, "Missiles",            BuildMissilesTab());
@@ -303,7 +321,7 @@ public partial class AdminPanelWindow : Window
         _missionTimeField = MakeSpinBox(0, 999999, 0);
         root.AddChild(Labeled("Mission Time (s)", _missionTimeField));
 
-        _callsignField = new LineEdit { Text = "Nighthawk", CustomMinimumSize = new Vector2(200, 0) };
+        _callsignField = new LineEdit { Text = "Cold Orbit", CustomMinimumSize = new Vector2(200, 0) };
         var callsignApply = new Button { Text = "Apply" };
         callsignApply.Pressed += () =>
             SimBus.Instance?.PublishAdminOverrideShipCallsign(_callsignField.Text);
@@ -542,6 +560,121 @@ public partial class AdminPanelWindow : Window
             repairQueue, effects, repairEta, powerAlloc, powerMax);
     }
 
+    private Control BuildRepairQueueTab()
+    {
+        var root = new VBoxContainer();
+
+        root.AddChild(new Label { Text = "── Repair Queue (stub) ──" });
+
+        _repairSystemOpt = MakeOptions(new[]
+        {
+            "weapons", "engines", "ftl", "reactor",
+            "utility_1", "utility_2", "utility_3", "utility_4", "hull",
+        }, 1);
+        root.AddChild(Labeled("System", _repairSystemOpt));
+
+        _repairStatusOpt = MakeOptions(new[] { "queued", "in_progress", "blocked" });
+        root.AddChild(Labeled("Status", _repairStatusOpt));
+
+        _repairEtaBox = MakeSpinBox(0, 9999, 120);
+        root.AddChild(Labeled("Repair ETA s (0 = null)", _repairEtaBox));
+
+        _repairHealthBox = MakeSpinBox(0, 100, 50);
+        root.AddChild(Labeled("Health %", _repairHealthBox));
+
+        var enqueueBtn = new Button { Text = "Enqueue / Update" };
+        enqueueBtn.Pressed += OnRepairEnqueue;
+        root.AddChild(enqueueBtn);
+
+        root.AddChild(new HSeparator());
+
+        _repairItemList = new ItemList { CustomMinimumSize = new Vector2(420, 180) };
+        root.AddChild(_repairItemList);
+
+        var removeBtn = new Button { Text = "Remove Selected" };
+        removeBtn.Pressed += OnRepairRemoveSelected;
+        var upBtn = new Button { Text = "Move Up" };
+        upBtn.Pressed += () => OnRepairMove(-1);
+        var downBtn = new Button { Text = "Move Down" };
+        downBtn.Pressed += () => OnRepairMove(1);
+        root.AddChild(Row(removeBtn, upBtn, downBtn));
+
+        // Seed the stub with the same mock the SimBus startup stub publishes.
+        if (_repairQueue.Count == 0)
+        {
+            _repairQueue.Add(new RepairQueueEntry { System = "engines", Status = "in_progress", RepairEtaS = 180, Health = 35 });
+            _repairQueue.Add(new RepairQueueEntry { System = "ftl",     Status = "queued",       RepairEtaS = 60,  Health = 70 });
+        }
+        RefreshRepairItemList();
+
+        return root;
+    }
+
+    private void OnRepairEnqueue()
+    {
+        string system = _repairSystemOpt.GetItemText(_repairSystemOpt.Selected);
+        string status = _repairStatusOpt.GetItemText(_repairStatusOpt.Selected);
+        int eta = (int)_repairEtaBox.Value;
+        int health = (int)_repairHealthBox.Value;
+        var existing = _repairQueue.Find(e => e.System == system);
+        if (existing != null)
+        {
+            existing.Status = status;
+            existing.RepairEtaS = eta;
+            existing.Health = health;
+        }
+        else
+        {
+            _repairQueue.Add(new RepairQueueEntry { System = system, Status = status, RepairEtaS = eta, Health = health });
+        }
+        RefreshRepairItemList();
+        PublishRepairQueue();
+    }
+
+    private void OnRepairRemoveSelected()
+    {
+        int[] sel = _repairItemList.GetSelectedItems();
+        if (sel.Length == 0) return;
+        _repairQueue.RemoveAt(sel[0]);
+        RefreshRepairItemList();
+        PublishRepairQueue();
+    }
+
+    private void OnRepairMove(int dir)
+    {
+        int[] sel = _repairItemList.GetSelectedItems();
+        if (sel.Length == 0) return;
+        int i = sel[0];
+        int j = i + dir;
+        if (j < 0 || j >= _repairQueue.Count) return;
+        (_repairQueue[i], _repairQueue[j]) = (_repairQueue[j], _repairQueue[i]);
+        RefreshRepairItemList();
+        _repairItemList.Select(j);
+        PublishRepairQueue();
+    }
+
+    private void RefreshRepairItemList()
+    {
+        _repairItemList.Clear();
+        foreach (var e in _repairQueue)
+        {
+            string eta = e.RepairEtaS > 0 ? $"{e.RepairEtaS}s" : "—";
+            _repairItemList.AddItem($"{e.System} ({e.Status}, {eta}, {e.Health}%)");
+        }
+    }
+
+    private void PublishRepairQueue()
+        => SimBus.Instance?.PublishAdminOverrideRepairQueue(BuildRepairQueuePayload());
+
+    private object[] BuildRepairQueuePayload()
+        => _repairQueue.Select(e => (object)new
+        {
+            system = e.System,
+            status = e.Status,
+            repair_eta_seconds = e.RepairEtaS > 0 ? (int?)e.RepairEtaS : null,
+            health = e.Health,
+        }).ToArray();
+
     private Control BuildCommsTab()
     {
         var root = new VBoxContainer();
@@ -553,7 +686,7 @@ public partial class AdminPanelWindow : Window
         _commsMsgs.Add(new CommsMsg
         {
             Id = "msg_001", Direction = "incoming", Sender = "Harlan Voss",
-            Text = "Nighthawk, this is Voss. You in position?", TimestampS = 3600,
+            Text = "Cold Orbit, this is Voss. You in position?", TimestampS = 3600,
         });
         _commsMsgs.Add(new CommsMsg
         {

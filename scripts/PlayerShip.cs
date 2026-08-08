@@ -63,8 +63,9 @@ public partial class PlayerShip : RigidBody3D
     private Label _debugLabel;
     private Label _helpLabel;
 
-    // Cached planet node (batch 14). Written once in _Ready; read on the
-    // physics step (_IntegrateForces, HandleThrust) and from _PhysicsProcess.
+    // Cached planet node (batch 14). Resolved in _Ready primarily from
+    // SimBus.Instance.Planet (set by Planet._Ready); read on the physics step
+    // (_IntegrateForces, HandleThrust) and from _PhysicsProcess.
     // GlobalPosition/SoiName/GM are all reads -- safe while Planet remains a
     // non-moving StaticBody3D (see Planet.cs threading note).
     private Planet _planet;
@@ -123,10 +124,13 @@ public partial class PlayerShip : RigidBody3D
             Friction = CollisionFriction,
         };
 
-        if (!PlanetPath.IsEmpty)
-        {
-            _planet = GetNodeOrNull<Planet>(PlanetPath);
-        }
+        // Prefer the planet registered with SimBus (set in Planet._Ready, which
+        // runs before this because Planet is an earlier scene sibling). The C#
+        // script-class cast in GetNodeOrNull<Planet> can return null, so SimBus
+        // is the reliable source. Fall back to the exported NodePath lookup for
+        // scenes that wire the planet without registering it on SimBus.
+        _planet = SimBus.Instance.Planet
+                  ?? (PlanetPath.IsEmpty ? null : GetNodeOrNull<Planet>(PlanetPath));
 
         RegisterKeyAction("thrust_forward", Key.W);
         RegisterKeyAction("thrust_reverse", Key.S);
