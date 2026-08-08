@@ -42,7 +42,7 @@ script = ExtResource("3")
 [node name="TestObstacles" parent="." instance=ExtResource("4")]
 
 [node name="Planet" parent="." instance=ExtResource("5")]
-position = Vector3(0, 0, -20000)
+position = Vector3(0, 0, -10000)
 
 [node name="PlayerShip" type="RigidBody3D" parent="."]
 mass = 1000.0

@@ -10,12 +10,12 @@
 | Value | Value | Where |
 |---|---|---|
 | `PlanetRadius` | 6000 units (≈6 km engine units ≈ 6,000 km real radius) | `[Export]` on `Planet.cs` |
-| Planet centre | `(0, 0, -20000)` | `scenes/planet.tscn` instanced into `main.tscn` |
+| Planet centre | `(0, 0, -10000)` | `scenes/planet.tscn` instanced into `main.tscn` |
 | `AtmosphereRadius` | 7200 units (20% above surface, visual only) | `[Export]` on `Planet.cs` |
 | `SurfaceGravity` | 9.8 m/s² (Earth-like) | `[Export]` on `Planet.cs` |
 | `SoiName` | `"Kael"` (placeholder, for lore later) | `[Export]` on `Planet.cs` |
 
-Start state: ship at origin, planet centre 20,000 m ahead (ship forward is −Z), surface ≈ 14,000 m below. Soi-telemetry threshold `PlanetRadius × 5` = 30,000 m from centre, so the ship starts **inside** Kael's SOI → `soi_body = "Kael"` at spawn.
+Start state: ship at origin, planet centre 10,000 m ahead (ship forward is −Z), surface ≈ 4,000 m below, surface gravity pull ≈ 3.5 m/s² at spawn (clearly felt). Soi-telemetry threshold `PlanetRadius × 5` = 30,000 m from centre, so the ship starts **inside** Kael's SOI → `soi_body = "Kael"` at spawn.
 
 ## GM derived, not hardcoded
 
@@ -46,7 +46,7 @@ if (_planet != null)
 
 In `HandleThrust`, when dampeners are on and there is no thrust input:
 
-- **Near a planet:** only the lateral velocity (perpendicular to the gravity vector) is damped — the radial/falling component is untouched. **The ship falls correctly when idle with dampeners on**, instead of hovering against gravity. On paper: at spawn the ship hangs briefly then begins a slow fall (≈0.88 m/s² at 20,000 m from centre), accelerating as it approaches the surface.
+- **Near a planet:** only the lateral velocity (perpendicular to the gravity vector) is damped — the radial/falling component is untouched. **The ship falls correctly when idle with dampeners on**, instead of hovering against gravity. On paper: at spawn the pull is ≈3.5 m/s² (10,000 m from centre) and rises as the ship approaches the surface — clearly felt within a couple of seconds, and the fall continues with dampeners on.
 - **Open space:** unchanged — full velocity-proportional brake.
 - Angular dampening untouched (spin is always lateral). `gravity_scale = 0.0` is retained so the manual model is the only gravity.
 
@@ -70,13 +70,14 @@ Label-only — gravity itself has **no SOI cutoff** (infinite inverse square), p
 
 ## Test obstacles — no conflict (confirmed, not assumed)
 
-`scenes/test_obstacles.tscn` walls/cubes are at Z = −150 to −200. Planet surface is at Z ≈ −14,000. Completely different depth ranges; no overlap, no changes made.
+`scenes/test_obstacles.tscn` walls/cubes are at Z = −150 to −200. Planet surface is at Z ≈ −4,000. Completely different depth ranges; no overlap, no changes made.
 
 ## Deviations and judgment calls
 
 - **Mesh/collider sizes are authored in the .tscn, not driven by the exports.** `PlanetRadius`/`AtmosphereRadius` are `[Export]` (so they're discoverable/tuneable in the inspector and the source of truth for GM), but the `SphereMesh`/`SphereShape3D` radii are hardcoded to match the defaults (6000 / 7200). Changing them at runtime (or via the inspector alone) would desync visuals from physics — flagged as out of scope by the handover (Task 5) and left for a future "rebuild meshes on export change" pass.
-- **Camera far plane enlarged** to 100,000 (from Godot's default 4,000) on the chase camera in `main.tscn` — required for the 20 km-away planet to render at all. Not in the handover; without it the planet would be clipped.
+- **Camera far plane enlarged** to 100,000 (from Godot's default 4,000) on the chase camera in `main.tscn` — required for the 10 km-away planet to render at all. Not in the handover; without it the planet would be clipped.
 - **Atmosphere is a simple unshaded additive sphere** (low-alpha blue) — placeholder visual, no gameplay effect, as specified.
+- **Planet texture is procedurally baked at startup** in `Planet.cs` (FastNoiseLite sampled on the unit sphere → seamless continents; ocean depth gradient, forest/desert/rock/snow biomes, polar caps, clouds). Same pattern as `StarfieldSky` — no external assets. The scene's `SphereMesh`/`SphereShape3D` still carry the hardcoded radius (6000).
 - **Admin engine-temp override** (`PublishAdminOverridePropulsionTemp`) now carries live `altitude_m` and the live `SoiBody` so the ≤1-tick override payload stays consistent with the real state publish. PlayerShip overwrites it on the next telemetry tick regardless.
 - **`SoiBody` naming**: used `SoiBody` on `PropulsionState` (matches the codebase's PascalCase for bus fields; the MQTT key remains snake_case `soi_body`).
 - **Planet registers itself on SimBus** (`SimBus.Instance.Planet = this` in `Planet._Ready`) so the admin panel reaches it without a scene reference.
