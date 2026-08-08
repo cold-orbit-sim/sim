@@ -32,9 +32,14 @@ public partial class AdminPanelWindow : Window
     private CheckButton _propReverseToggle;
     private HSlider _propEngineTempSlider;
     private Label _propVelocityLabel;
+    private Label _propAltitudeLabel;
     private Label _propCollisionForceLabel;
-    private LineEdit _propSoiField;
-    private string _adminSoiBody = "Unknown";
+    private Label _propSoiLabel;
+
+    // ── Planet controls (Propulsion tab, batch 14) ──────────────────────────
+    private HSlider _planetGravitySlider;
+    private Label _planetRadiusLabel;
+    private Label _planetAltitudeLabel;
 
     // ── FTL controls ──────────────────────────────────────────────────────────
     private CheckButton _ftlArmToggle;
@@ -337,11 +342,14 @@ public partial class AdminPanelWindow : Window
 
         _propEngineTempSlider = MakeSlider(0, 1000, 0, 1);
         _propEngineTempSlider.ValueChanged += v =>
-            SimBus.Instance?.PublishAdminOverridePropulsionTemp((float)v, _adminSoiBody);
+            SimBus.Instance?.PublishAdminOverridePropulsionTemp((float)v, SimBus.Instance.Propulsion.SoiBody);
         root.AddChild(Labeled("Engine Temp °C (override; ≤1 tick)", _propEngineTempSlider));
 
         _propVelocityLabel = new Label { Text = "0.00 m/s" };
         root.AddChild(Labeled("Velocity (display-only)", _propVelocityLabel));
+
+        _propAltitudeLabel = new Label { Text = "0 m" };
+        root.AddChild(Labeled("Altitude (display-only)", _propAltitudeLabel));
 
         _propCollisionForceLabel = new Label { Text = "0.0 N" };
         root.AddChild(Labeled("Hull impact force (display-only)", _propCollisionForceLabel));
@@ -350,15 +358,22 @@ public partial class AdminPanelWindow : Window
         simCollisionBtn.Pressed += () => SimBus.Instance?.AdminTriggerCollisionAlert();
         root.AddChild(simCollisionBtn);
 
-        _propSoiField = new LineEdit { Text = "Unknown", CustomMinimumSize = new Vector2(200, 0) };
-        var soiApply = new Button { Text = "Apply" };
-        soiApply.Pressed += () =>
-        {
-            _adminSoiBody = _propSoiField.Text;
-            SimBus.Instance?.PublishAdminOverridePropulsionTemp(
-                (float)_propEngineTempSlider.Value, _adminSoiBody);
-        };
-        root.AddChild(Labeled("SOI Body (override; ≤1 tick)", Row(_propSoiField, soiApply)));
+        _propSoiLabel = new Label { Text = "Deep Space" };
+        root.AddChild(Labeled("SOI Body (display-only)", _propSoiLabel));
+
+        root.AddChild(new HSeparator());
+        root.AddChild(new Label { Text = "── Planet ──" });
+
+        _planetGravitySlider = MakeSlider(0, 20, 9.8, 0.1);
+        _planetGravitySlider.ValueChanged += v =>
+            SimBus.Instance?.AdminSetPlanetGravity((float)v);
+        root.AddChild(Labeled("Surface Gravity m/s² (0–20)", _planetGravitySlider));
+
+        _planetRadiusLabel = new Label { Text = "0 m" };
+        root.AddChild(Labeled("Planet Radius (display-only)", _planetRadiusLabel));
+
+        _planetAltitudeLabel = new Label { Text = "0 m" };
+        root.AddChild(Labeled("Distance to surface (display-only)", _planetAltitudeLabel));
 
         return root;
     }
@@ -1101,7 +1116,20 @@ public partial class AdminPanelWindow : Window
         _propReverseToggle.SetPressedNoSignal(p.ReverseEnabled);
         _propEngineTempSlider.SetValueNoSignal(p.EngineTemp);
         _propVelocityLabel.Text = $"{p.Velocity:0.00} m/s";
+        _propAltitudeLabel.Text = $"{p.AltitudeM:0} m";
         _propCollisionForceLabel.Text = $"{p.CollisionForceN:0.0} N";
+
+        if (_propSoiLabel.Text != p.SoiBody) _propSoiLabel.Text = p.SoiBody;
+
+        // Planet section: gravity slider is admin-write (NoSignal so the
+        // sim→UI→sim loop can't fire); radius and distance are read-only.
+        var planet = SimBus.Instance.Planet;
+        if (planet != null)
+        {
+            _planetGravitySlider.SetValueNoSignal(planet.SurfaceGravity);
+            _planetRadiusLabel.Text = $"{planet.PlanetRadius:0} m";
+            _planetAltitudeLabel.Text = $"{p.AltitudeM:0} m";
+        }
     }
 
     private void SyncFtlFromBus()

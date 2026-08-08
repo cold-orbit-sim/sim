@@ -33,6 +33,14 @@ public partial class SimBus : Node
     public AlertsState Alerts { get; } = new();
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
+    // Set by Planet._Ready. Read by the admin panel (gravity override, planet
+    // constants) and PlayerShip (via its own cached reference). Main-thread only.
+    public Planet? Planet { get; set; }
+
+    // Pending SurfaceGravity value from the admin panel, applied on the Godot
+    // main thread in _Process (see AdminSetPlanetGravity).
+    private float? _pendingPlanetGravity;
+
     // Default loadout: three utility tools in slots 1-3, slot 4 empty.
     // Overwritten on receipt of coldorbit/input/ship/loadout.
     public HardpointSlot[] Hardpoints { get; } = new HardpointSlot[4]
@@ -80,6 +88,15 @@ public partial class SimBus : Node
     // Publishes hardpoint telemetry at 10 Hz from the Godot main thread.
     public override void _Process(double delta)
     {
+        // Apply admin planet-gravity overrides on the main thread rather than
+        // from the UI callback -- SurfaceGravity is also read on the physics
+        // step (PlayerShip._IntegrateForces via GM).
+        if (_pendingPlanetGravity.HasValue)
+        {
+            if (Planet != null) Planet.SurfaceGravity = _pendingPlanetGravity.Value;
+            _pendingPlanetGravity = null;
+        }
+
         const float hz = 10f;
         _hardpointTelemetryAccumulator += (float)delta;
         if (_hardpointTelemetryAccumulator < 1f / hz) return;
@@ -862,6 +879,15 @@ public partial class SimBus : Node
         public float ThrottleInput { get; private set; }  // 0–1, abs of current thrust axis
         public bool ReverseEnabled { get; private set; }  // true while reverse input is active
 
+        // Altitude above the nearest planet's surface (m). Negative below the
+        // surface (crash state). Written by PlayerShip each physics frame.
+        public float AltitudeM { get; private set; }
+
+        // SOI-body label ("Kael" inside the loose threshold, "Deep Space"
+        // outside). Label only — gravity has no SOI cutoff. Written by
+        // PlayerShip each physics frame.
+        public string SoiBody { get; private set; } = "Deep Space";
+
         // True whenever propulsion is disabled, regardless of cause. Currently
         // only ever set from the overheat cutoff below, but named and read
         // independently of that so a future damage/sabotage system can set it
@@ -879,7 +905,8 @@ public partial class SimBus : Node
 
         public void PublishTelemetry(
             float propellantMix, float engineTemp, bool overheated, bool propulsionDisabled,
-            float velocity, float accelerationMs2, float throttleInput, bool reverseEnabled)
+            float velocity, float accelerationMs2, float throttleInput, bool reverseEnabled,
+            float altitudeM, string soiBody)
         {
             PropellantMix = propellantMix;
             EngineTemp = engineTemp;
@@ -889,6 +916,8 @@ public partial class SimBus : Node
             AccelerationMs2 = accelerationMs2;
             ThrottleInput = throttleInput;
             ReverseEnabled = reverseEnabled;
+            AltitudeM = altitudeM;
+            SoiBody = soiBody;
         }
     }
 
@@ -1048,6 +1077,7 @@ public partial class SimBus : Node
             },
             velocity_ms = MathF.Round(p.Velocity, 2),
             acceleration_ms2 = MathF.Round(p.AccelerationMs2, 2),
+            altitude_m = MathF.Round(p.AltitudeM, 1),
             soi_body = soiBody,
         });
         Mqtt.Publish("coldorbit/output/propulsion/state", payload,
@@ -1152,6 +1182,15 @@ public partial class SimBus : Node
     public void AdminTriggerCollisionAlert()
     {
         Propulsion.PendingAdminCollisionN = 5001f; // just above default 5000 N threshold
+    }
+
+    // Admin override for Planet.SurfaceGravity. Deferred to the Godot main
+    // thread (_Process) because SurfaceGravity is read on the physics step
+    // (PlayerShip._IntegrateForces via GM) and Planet is a scene node — the
+    // admin panel shouldn't write it directly from its UI callback.
+    public void AdminSetPlanetGravity(float surfaceGravity)
+    {
+        _pendingPlanetGravity = surfaceGravity;
     }
 
     // Admin writes base hardpoint fields directly to SimBus.Hardpoints and calls

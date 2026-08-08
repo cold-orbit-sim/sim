@@ -46,6 +46,7 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
     [Export] public NodePath DebugLabelPath { get; set; } = new NodePath();
     [Export] public NodePath HelpLabelPath { get; set; } = new NodePath();
+    [Export] public NodePath PlanetPath { get; set; } = new NodePath();
 
     private bool _helpVisible = false;
     private float _propellantMix = 0f;       // 0 = Economy, 1 = Power
@@ -61,6 +62,16 @@ public partial class PlayerShip : RigidBody3D
     private float _telemetryPublishAccumulator = 0f;
     private Label _debugLabel;
     private Label _helpLabel;
+
+    // Cached planet node (batch 14). Written once in _Ready; read on the
+    // physics step (_IntegrateForces, HandleThrust) and from _PhysicsProcess.
+    // GlobalPosition/SoiName/GM are all reads -- safe while Planet remains a
+    // non-moving StaticBody3D (see Planet.cs threading note).
+    private Planet _planet;
+
+    // Altitude above the planet surface in metres. Negative when below the
+    // surface (crash state). Computed each physics frame in _PhysicsProcess.
+    private float _altitudeM = 0f;
 
     // Alert state tracking -- raise/clear only on transitions so we don't
     // republish the full alerts array on every physics frame.
@@ -95,7 +106,10 @@ public partial class PlayerShip : RigidBody3D
 
     public override void _Ready()
     {
-        GravityScale = 0f; // no gravity in space
+        // No built-in gravity: batch 14 applies inverse-square gravity manually
+        // in _IntegrateForces (GravityScale stays 0 via the scene node value).
+        // Built-in gravity would otherwise stack 9.8 m/s² "down" on top of the
+        // manual model.
 
         // Enable contact reporting so _IntegrateForces receives impulse data.
         ContactMonitor = true;
@@ -108,6 +122,11 @@ public partial class PlayerShip : RigidBody3D
             Bounce = CollisionBounce,
             Friction = CollisionFriction,
         };
+
+        if (!PlanetPath.IsEmpty)
+        {
+            _planet = GetNodeOrNull<Planet>(PlanetPath);
+        }
 
         RegisterKeyAction("thrust_forward", Key.W);
         RegisterKeyAction("thrust_reverse", Key.S);
@@ -151,6 +170,12 @@ public partial class PlayerShip : RigidBody3D
     {
         float dt = (float)delta;
         _missionTimeS += dt;
+
+        // Altitude above planet surface; negative below surface (crash state).
+        _altitudeM = _planet != null
+            ? (_planet.GlobalPosition - GlobalPosition).Length() - _planet.PlanetRadius
+            : 0f;
+
         HandleMix(dt);
         HandleThrust(dt);
         HandleStrafe();
@@ -209,6 +234,22 @@ public partial class PlayerShip : RigidBody3D
             if (impulse > CollisionAlertThresholdN && impulse > _pendingCollisionImpulse)
                 _pendingCollisionImpulse = impulse;
         }
+
+        // Gravity — inverse square toward planet centre (batch 14).
+        // _planet.GM and _planet.GlobalPosition are reads; safe while Planet is
+        // a StaticBody3D that never moves. If the planet ever becomes dynamic
+        // (moving/rotating) or multithreaded physics is enabled, this read path
+        // needs revisiting (see Planet.cs threading note).
+        if (_planet != null)
+        {
+            Vector3 toCenter = _planet.GlobalPosition - state.Transform.Origin;
+            float distSq = toCenter.LengthSquared();
+            if (distSq > 0.01f) // guard against division by zero at planet centre
+            {
+                float accel = _planet.GM / distSq;
+                state.ApplyCentralForce(toCenter.Normalized() * accel * Mass);
+            }
+        }
     }
 
     private void HandleMix(float dt)
@@ -254,7 +295,21 @@ public partial class PlayerShip : RigidBody3D
             // a "no active input" behavior, not an overheat side effect,
             // so an overheated ship coasts on residual velocity instead of
             // snap-braking while the player is still holding thrust.
-            ApplyCentralForce(-LinearVelocity * LinearDampenerGain * Mass);
+            //
+            // Near a planet (batch 14) only the lateral component of
+            // velocity is damped -- the component along the gravity vector
+            // is left alone so the ship falls correctly when idle instead
+            // of hovering against gravity indefinitely.
+            if (_planet != null)
+            {
+                Vector3 gravDir = (_planet.GlobalPosition - GlobalPosition).Normalized();
+                Vector3 lateralVelocity = LinearVelocity - gravDir * LinearVelocity.Dot(gravDir);
+                ApplyCentralForce(-lateralVelocity * LinearDampenerGain * Mass);
+            }
+            else
+            {
+                ApplyCentralForce(-LinearVelocity * LinearDampenerGain * Mass);
+            }
         }
 
         // Passive radiative cooling always applies, even mid-burn, so heat
@@ -372,6 +427,7 @@ public partial class PlayerShip : RigidBody3D
 
         _debugLabel.Text =
             $"Velocity: {LinearVelocity.Length():0.0} m/s\n" +
+            $"Alt: {_altitudeM:0} m\n" +
             $"Dampeners: {(SimBus.Instance.Propulsion.DampenersEnabled ? "ON" : "OFF")} (X to toggle)\n" +
             $"RCS: {(SimBus.Instance.Propulsion.RcsEnabled ? "ON" : "OFF")} (V to toggle)\n" +
             $"Mix: {mixLabel} (1=Economy, 2=Power)\n" +
@@ -395,7 +451,19 @@ public partial class PlayerShip : RigidBody3D
             velocity: velocity,
             accelerationMs2: acceleration,
             throttleInput: _thrustInput,
-            reverseEnabled: _reverseEnabled);
+            reverseEnabled: _reverseEnabled,
+            altitudeM: _altitudeM,
+            soiBody: GetSoiBody());
+    }
+
+    // SOI-body label for telemetry: the planet's SoiName while within a loose
+    // distance threshold, "Deep Space" otherwise. Label-only -- gravity has no
+    // SOI cutoff (see Planet.cs).
+    private string GetSoiBody()
+    {
+        if (_planet == null) return "Deep Space";
+        float distToCentre = (_planet.GlobalPosition - GlobalPosition).Length();
+        return distToCentre <= _planet.PlanetRadius * 5f ? _planet.SoiName : "Deep Space";
     }
 
     // MQTT publish paths:
@@ -533,10 +601,12 @@ public partial class PlayerShip : RigidBody3D
             },
             velocity_ms = MathF.Round(p.Velocity, 2),
             acceleration_ms2 = MathF.Round(p.AccelerationMs2, 2),
+            altitude_m = MathF.Round(p.AltitudeM, 1),
             // collision_force_n: 0.0 at rest, peak impulse (N) for 3 s after impact.
             collision_force_n = MathF.Round(p.CollisionForceN, 1),
-            // soi_body: no gravity/SOI model exists yet -- hardcoded placeholder (§3.1b batch 8)
-            soi_body = "Unknown",
+            // soi_body: planet SoiName within the loose distance threshold,
+            // "Deep Space" beyond it (label only — gravity has no SOI cutoff).
+            soi_body = p.SoiBody,
         });
 
         mqtt.Publish("coldorbit/output/propulsion/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);

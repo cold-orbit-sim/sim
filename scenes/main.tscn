@@ -1,9 +1,10 @@
-[gd_scene load_steps=9 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://scripts/PlayerShip.cs" id="1"]
 [ext_resource type="Script" path="res://scripts/StarfieldSky.cs" id="2"]
 [ext_resource type="Script" path="res://scripts/DebrisField.cs" id="3"]
 [ext_resource type="PackedScene" path="res://scenes/test_obstacles.tscn" id="4"]
+[ext_resource type="PackedScene" path="res://scenes/planet.tscn" id="5"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -40,6 +41,9 @@ script = ExtResource("3")
 
 [node name="TestObstacles" parent="." instance=ExtResource("4")]
 
+[node name="Planet" parent="." instance=ExtResource("5")]
+position = Vector3(0, 0, -20000)
+
 [node name="PlayerShip" type="RigidBody3D" parent="."]
 mass = 1000.0
 gravity_scale = 0.0
@@ -49,6 +53,7 @@ max_contacts_reported = 4
 script = ExtResource("1")
 DebugLabelPath = NodePath("../HUD/DebugLabel")
 HelpLabelPath = NodePath("../HUD/HelpLabel")
+PlanetPath = NodePath("../Planet")
 
 [node name="ShipMesh" type="MeshInstance3D" parent="PlayerShip"]
 rotation_degrees = Vector3(90, 0, 0)
@@ -63,6 +68,7 @@ shape = SubResource("CapsuleShape3D_1")
 position = Vector3(0, 2, 8)
 rotation_degrees = Vector3(-10, 0, 0)
 current = true
+far = 100000.0
 
 [node name="HUD" type="CanvasLayer" parent="."]
 

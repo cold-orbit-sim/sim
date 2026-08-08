@@ -1,238 +1,93 @@
-# Handover Back — Batch 13: Remaining Hardpoint Modules
+# Handover Back — Batch 14: Nearby Planet + Gravity
 
-**Godot 4.7 / .NET 8 — build: 0 errors, 35 warnings**
-(35 CS8632 nullable warnings — 33 pre-existing, 2 new from new nullable fields in HardpointSlot; no new warning categories)
+**Godot 4.7 / .NET 8 — build: 0 errors, 36 warnings**
+(36 CS8632 nullable-context warnings — 35 pre-existing, 1 new from `public Planet? Planet` on `SimBus`. All in the established convention; no new warning categories.)
 
 ---
 
-## Summary of what was implemented
+## Planet values used
 
-### Task 1 — `SimBus.HardpointSlot` extension
+| Value | Value | Where |
+|---|---|---|
+| `PlanetRadius` | 6000 units (≈6 km engine units ≈ 6,000 km real radius) | `[Export]` on `Planet.cs` |
+| Planet centre | `(0, 0, -20000)` | `scenes/planet.tscn` instanced into `main.tscn` |
+| `AtmosphereRadius` | 7200 units (20% above surface, visual only) | `[Export]` on `Planet.cs` |
+| `SurfaceGravity` | 9.8 m/s² (Earth-like) | `[Export]` on `Planet.cs` |
+| `SoiName` | `"Kael"` (placeholder, for lore later) | `[Export]` on `Planet.cs` |
 
-All fields added with correct defaults:
+Start state: ship at origin, planet centre 20,000 m ahead (ship forward is −Z), surface ≈ 14,000 m below. Soi-telemetry threshold `PlanetRadius × 5` = 30,000 m from centre, so the ship starts **inside** Kael's SOI → `soi_body = "Kael"` at spawn.
+
+## GM derived, not hardcoded
+
+`public float GM => SurfaceGravity * PlanetRadius * PlanetRadius;` — `GM = 9.8 × 6000² = 352,800,000 m³/s²`. No raw gravitational constant anywhere. `PlayerShip` reads `_planet.GM` each physics frame.
+
+## Gravity applies in `_IntegrateForces` alongside collision
+
+Confirmed. `_IntegrateForces` (PlayerShip) keeps the batch-11 collision-impulse loop unchanged and appends the inverse-square gravity block after it:
 
 ```csharp
-// --- Cargo/Storage ---
-public float FillPct     { get; set; }           // default 0
-public string? Contents  { get; set; }           // default null
-public float? TempC      { get; set; }           // default null (reefer only)
-public float? TempMin    { get; set; }           // default null
-public float? TempMax    { get; set; }           // default null
-
-// --- Sensor/EW ---
-public bool ScannerModeActive { get; set; }      // default false
-public bool ScannerModeBeam   { get; set; }      // default false
-public float ScannerBearing   { get; set; }      // default 0; 0–360 wrapping
-public bool StealthOn         { get; set; }      // default false
-
-// --- Defense ---
-public bool ShieldOn                  { get; set; }      // default false
-public string ShieldSelectedFacing    { get; set; } = "fore";
-public Dictionary<string, float> ShieldStrengths { get; set; }
-    // = { "fore":0.5, "aft":0.5, "port":0.5, "starboard":0.5 }
-public bool PdEngaged          { get; set; }     // default false
-public bool MissileLockWarning { get; set; }     // default false
-public int  DecoyCount         { get; set; } = 12;
-```
-
-All fields reset to defaults in `HandleLoadoutConfirm` per the same pattern as base fields.
-
----
-
-### Task 2 — `encoder_b` subscription
-
-`coldorbit/input/hardpoints/+/encoder_b` subscribed in `_Ready()`. Payload shape same as `encoder_a`.
-
-Wired per contract:
-- **Long-range Scanner Array:** adjusts `ScannerBearing` (±1°/detent, 0–360 wrapping) **only when** `ScannerModeActive && ScannerModeBeam`; logs and ignores otherwise. Calls `PublishHardpointModule` on change to keep `updated_at` fresh (bearing is not in the module state payload per the contract table).
-- **Prospecting Suite:** adjusts ore filter index (same `StepProspectingIndex` helper as encoder_a).
-- **Stealth/ECM Package:** adjusts `Intensity` (power draw) ±0.05/detent, 0–1 clamp.
-- **All others:** log and ignore.
-
----
-
-### Task 3 — Soft-key handling (all categories)
-
-`HandleSoftkey` now dispatches by category to dedicated helpers:
-
-**`HandleSoftkeyUtilityTool`** — unchanged behaviour from batch 12.
-
-**`HandleSoftkeyUtilityTool` (cargo_storage)** — all SKs: no-op, no log.
-
-**`HandleSoftkeySensorEW`:**
-- Scanner Array: SK5 → toggle `ScannerModeActive`; SK6 → toggle `ScannerModeBeam` (guarded: logs + no-op if not Active)
-- Prospecting Suite: SK5 → "SCAN triggered (no gameplay outcome)" logged; SK6 → decrement index; SK7 → increment index
-- Stealth/ECM: SK5 → toggle `StealthOn`
-
-**`HandleSoftkeyDefense`:**
-- Shield Generator: SK1–SK4 → select facing (fore/aft/port/starboard); SK5 → toggle `ShieldOn`
-- Point-Defense Turret: SK5 → toggle `PdEngaged`
-- Decoy/Flare: SK5 → `DecoyCount--` (floor 0)
-
-**Encoder A extensions** (beyond utility, which is unchanged):
-- Scanner Array: ±`Intensity` 0.05/detent, 0–1 clamp (range)
-- Prospecting Suite: ±ore filter index via `StepProspectingIndex`
-- Stealth/ECM: ±`Intensity` 0.05/detent (frequency)
-- Shield Generator: ±`ShieldStrengths[ShieldSelectedFacing]` 0.05/detent → **calls `PublishHardpointModule`** (shield_strengths is in module state)
-- All others: no-op
-
----
-
-### Task 4 — `PublishHardpointModule` (per-module payload)
-
-Replaced inline serialization with `BuildModulePayload(HardpointSlot hp, int slot)` returning `Dictionary<string, object?>`. Each module includes only the fields listed in the contract table:
-
-| Module | Extra fields |
-|---|---|
-| Mining Laser | none |
-| Cutting/Welding Torch | `mode` |
-| Grapple/Winch Rig | `attached` |
-| Standard Pod | `fill_pct`, `contents` |
-| Reefer Pod | `fill_pct`, `contents`, `temp_c`, `temp_min`, `temp_max` |
-| Ore Hopper | `fill_pct`, `contents` |
-| Long-range Scanner Array | `scanner_mode_active`, `scanner_mode_beam` |
-| Prospecting Suite | none |
-| Stealth/ECM Package | `stealth_on` |
-| Deflector Shield Generator | `shield_on`, `shield_selected_facing`, `shield_strengths` |
-| Point-Defense Turret Pod | `pd_engaged` |
-| Decoy/Flare Dispenser | `missile_lock_warning`, `decoy_count` |
-| empty | none |
-
-Example payloads from `mosquitto_sub -t 'coldorbit/output/hardpoints/+/module' -v`:
-
-**cargo_storage / Reefer Pod (slot 2):**
-```json
+if (_planet != null)
 {
-  "slot": 2, "category": "cargo_storage", "name": "Reefer Pod",
-  "armed": false, "updated_at": "2026-08-07T12:00:00Z",
-  "fill_pct": 0, "contents": null, "temp_c": null, "temp_min": null, "temp_max": null
+    Vector3 toCenter = _planet.GlobalPosition - state.Transform.Origin;
+    float distSq = toCenter.LengthSquared();
+    if (distSq > 0.01f)
+    {
+        float accel = _planet.GM / distSq;
+        state.ApplyCentralForce(toCenter.Normalized() * accel * Mass);
+    }
 }
 ```
 
-**sensor_ew / Long-range Scanner Array (slot 1):**
-```json
-{
-  "slot": 1, "category": "sensor_ew", "name": "Long-range Scanner Array",
-  "armed": true, "updated_at": "2026-08-07T12:00:00Z",
-  "scanner_mode_active": true, "scanner_mode_beam": false
-}
-```
+- `GravityScale = 0f` line in `_Ready` **removed**. The scene node keeps `gravity_scale = 0.0` so Godot's built-in 9.8 m/s² "down" doesn't stack on the manual model.
+- `PlanetPath` is `[Export] NodePath`, wired in `main.tscn` as `../Planet`; `_planet` cached in `_Ready`.
+- Threading flag added (both in `Planet.cs` and the `_IntegrateForces` block): reads of `GM`/`GlobalPosition` are safe while the planet is a non-moving `StaticBody3D` and Godot's default single-threaded physics applies. If the planet ever becomes dynamic, or multithreaded physics is enabled, the `SurfaceGravity` write (admin) vs read (physics step) needs proper sync.
 
-**defense / Deflector Shield Generator (slot 3):**
-```json
-{
-  "slot": 3, "category": "defense", "name": "Deflector Shield Generator",
-  "armed": true, "updated_at": "2026-08-07T12:00:00Z",
-  "shield_on": true, "shield_selected_facing": "fore",
-  "shield_strengths": {"fore": 0.7, "aft": 0.5, "port": 0.5, "starboard": 0.5}
-}
-```
+## Dampener / gravity interaction (on paper)
 
----
+In `HandleThrust`, when dampeners are on and there is no thrust input:
 
-### Task 5 — `PublishHardpointTelemetry` (all modules, correct units)
+- **Near a planet:** only the lateral velocity (perpendicular to the gravity vector) is damped — the radial/falling component is untouched. **The ship falls correctly when idle with dampeners on**, instead of hovering against gravity. On paper: at spawn the ship hangs briefly then begins a slow fall (≈0.88 m/s² at 20,000 m from centre), accelerating as it approaches the surface.
+- **Open space:** unchanged — full velocity-proportional brake.
+- Angular dampening untouched (spin is always lateral). `gravity_scale = 0.0` is retained so the manual model is the only gravity.
 
-**Utility tool telemetry corrected to real units** (batch 12 used % — this is the spec update):
-- Mining Laser / Cutting/Welding Torch: `INTNS`, `Intensity×500`, `kW`, 0–500
-- Grapple/Winch Rig: `LEN`, `Intensity×200`, `m`, 0–200
+## `soi_body` telemetry
 
-New modules:
-- Long-range Scanner Array: `RANGE`, `Intensity×500`, `km`, 0–500
-- Prospecting Suite: `IDX`, `round(Intensity×4)`, `""`, 0–4
-- Stealth/ECM Package: `FREQ`, `Intensity×100`, `MHz`, 0–100
-- Deflector Shield Generator: `STR`, `ShieldStrengths[ShieldSelectedFacing]×100`, `%`, 0–100
+`coldorbit/output/propulsion/state` now publishes the live value from `PlayerShip.GetSoiBody()` (stored on `PropulsionState.SoiBody`):
+- within `PlanetRadius × 5` (30,000 m) of centre → `"Kael"`
+- beyond → `"Deep Space"`
+- no planet → `"Deep Space"`
 
-Omitted (no publish): Standard Pod, Reefer Pod, Ore Hopper, Point-Defense Turret Pod, Decoy/Flare Dispenser, empty.
+Label-only — gravity itself has **no SOI cutoff** (infinite inverse square), per the handover guardrail. The admin panel's old editable "SOI Body (override)" field is now a read-only live-mirror of this value.
 
-Example from `mosquitto_sub -t 'coldorbit/output/hardpoints/+/telemetry' -v`:
-```json
-{"slot":1,"label":"INTNS","value":125.0,"unit":"kW","min":0,"max":500,"active":false,"mode":null}
-{"slot":3,"label":"STR","value":70.0,"unit":"%","min":0,"max":100,"active":false,"mode":null}
-```
+## Altitude field confirmed
 
----
+- **Debug HUD** (`PlayerShip.UpdateDebugLabel`): added `Alt: XXXXX m` line. `AltitudeM = dist(centre) − PlanetRadius`, negative below the surface (crash state).
+- **MQTT telemetry**: `altitude_m` published in `coldorbit/output/propulsion/state` alongside `velocity_ms` (both via `PropulsionState.AltitudeM`, written every physics frame).
+- **Admin panel Propulsion tab**: read-only "Altitude" label live-mirrored from `SimBus.Propulsion.AltitudeM`, plus a new "── Planet ──" section:
+  - `SurfaceGravity m/s² (0–20)` slider → `SimBus.AdminSetPlanetGravity(float)` → applied on the main thread in `SimBus._Process` via a pending field (`_pendingPlanetGravity`), not written directly from the UI callback. This is the deferred-write pattern the handover asked for — no threading issue observed, and it's documented.
+  - `Planet Radius` read-only label (runtime radius change would need mesh/collider rebuilds — out of scope, per handover).
+  - `Distance to surface` read-only label, live-mirrors `AltitudeM`.
 
-### Task 6 — Admin panel updates
+## Test obstacles — no conflict (confirmed, not assumed)
 
-`KnownModules` updated to correct contract names:
-- cargo: Standard Pod / Reefer Pod / Ore Hopper
-- sensor_ew: Long-range Scanner Array / Prospecting Suite / Stealth/ECM Package
-- defense: Deflector Shield Generator / Point-Defense Turret Pod / Decoy/Flare Dispenser
-
-**Category-specific control groups** added per slot (show/hide via `UpdateHardpointControlVisibility`):
-- `UtilityGroup`: Mode dropdown, Attached check — visible only for `utility_tool`
-- `CargoGroup`: Fill% slider, Contents field; sub-group `ReeferGroup` (TempC/TempMin/TempMax) visible only for Reefer Pod
-- `SensorGroup`: Scanner Active/Beam checks, Stealth On check — visible only for `sensor_ew`
-- `DefenseGroup`: Shield On, Facing dropdown, 4× strength sliders, PD Engaged, Missile Lock Warning, Decoy Count — visible only for `defense`
-
-All controls write directly to `SimBus.Instance.Hardpoints[slot-1]` then call `AdminUpdateHardpoint` which publishes. Live-mirrored via `SyncHardpointsFromBus` every frame with NoSignal/`_mirrorActive` guards.
-
----
-
-## How to verify
-
-**encoder_b (scanner bearing):**
-```bash
-mosquitto_pub -t coldorbit/input/hardpoints/1/arm -m '{"state":1,"updated_at":1000}'
-# First activate scanner mode (SK5 = Active, SK6 = Beam)
-mosquitto_pub -t coldorbit/input/hardpoints/1/softkey -m '{"key":"SK5","state":1,"updated_at":1001}'
-mosquitto_pub -t coldorbit/input/hardpoints/1/softkey -m '{"key":"SK6","state":1,"updated_at":1002}'
-# Now encoder_b should move bearing
-mosquitto_pub -t coldorbit/input/hardpoints/1/encoder_b -m '{"delta":10,"updated_at":1003}'
-# updated_at in module payload should change; no bearing field in payload (internal only)
-```
-
-**encoder_b (scanner Array, not in Active+Beam):**
-```bash
-mosquitto_pub -t coldorbit/input/hardpoints/1/encoder_b -m '{"delta":5,"updated_at":2000}'
-# GD.Print: "encoder_b slot 1 (Long-range Scanner Array) — ignored, not Active+Beam"
-```
-
-**Shield strength via encoder_a:**
-```bash
-mosquitto_pub -t coldorbit/input/hardpoints/3/arm -m '{"state":1,"updated_at":1000}'
-mosquitto_pub -t coldorbit/input/hardpoints/3/encoder_a -m '{"delta":3,"updated_at":1001}'
-# Module payload should show shield_strengths.fore updated by +0.15
-```
-
-**Decoy launch:**
-```bash
-mosquitto_pub -t coldorbit/input/hardpoints/4/arm -m '{"state":1,"updated_at":1000}'
-mosquitto_pub -t coldorbit/input/hardpoints/4/softkey -m '{"key":"SK5","state":1,"updated_at":1001}'
-# Module payload: "decoy_count": 11
-```
-
-**Telemetry units (utility tools):**
-```bash
-mosquitto_sub -t 'coldorbit/output/hardpoints/+/telemetry' -v
-# Expect "unit":"kW" max 500 for Mining Laser/Torch, "unit":"m" max 200 for Grapple
-```
-
----
-
-## SKs that resulted in "log and ignore"
-
-| Module | SK | Reason |
-|---|---|---|
-| Prospecting Suite | SK5 (SCAN) | No gameplay outcome yet — logged to GD.Print |
-| Long-range Scanner Array | SK6 when not Active | Guard: Beam mode only meaningful in Active mode |
-| Scanner Array encoder_b | encoder_b when not Active+Beam | Guard per contract |
-| cargo_storage any SK | All | No cargo manipulation inputs yet |
-| All sensor_ew modules | SKs not in contract | Log and ignore default case |
-| All defense modules | SKs not in contract | Log and ignore default case |
-
----
+`scenes/test_obstacles.tscn` walls/cubes are at Z = −150 to −200. Planet surface is at Z ≈ −14,000. Completely different depth ranges; no overlap, no changes made.
 
 ## Deviations and judgment calls
 
-- **`ScannerBearing` not in module state payload**: The contract table for Long-range Scanner Array lists only `scanner_mode_active` and `scanner_mode_beam`. Bearing is stored in `HardpointSlot.ScannerBearing` for potential future use but omitted from the MQTT payload. `PublishHardpointModule` is still called on bearing change (keeps `updated_at` fresh per handover note).
-- **encoder_a for Shield Generator calls `PublishHardpointModule`**: `shield_strengths` is in the module state, so changes to it (encoder_a on Shield Generator) trigger an immediate publish rather than waiting for the next telemetry tick. Other encoder_a changes (intensity-only) do not publish module state.
-- **Prospecting Suite `Intensity` storage**: Stored as normalized 0–1 (consistent with other modules). Integer index 0–4 is `round(Intensity × 4)`. Encoder and softkey both work through `StepProspectingIndex` which converts round-trip. This means the admin Intensity slider (0–1) maps correctly to indices 0–4.
-- **MissileLockWarning stays `false`**: Not driven by any gameplay mechanic yet. Admin panel exposes a checkbox for test injection, noted as test-only in the label.
-- **cargo_storage SKs**: Silent no-op (no log needed per handover).
+- **Mesh/collider sizes are authored in the .tscn, not driven by the exports.** `PlanetRadius`/`AtmosphereRadius` are `[Export]` (so they're discoverable/tuneable in the inspector and the source of truth for GM), but the `SphereMesh`/`SphereShape3D` radii are hardcoded to match the defaults (6000 / 7200). Changing them at runtime (or via the inspector alone) would desync visuals from physics — flagged as out of scope by the handover (Task 5) and left for a future "rebuild meshes on export change" pass.
+- **Camera far plane enlarged** to 100,000 (from Godot's default 4,000) on the chase camera in `main.tscn` — required for the 20 km-away planet to render at all. Not in the handover; without it the planet would be clipped.
+- **Atmosphere is a simple unshaded additive sphere** (low-alpha blue) — placeholder visual, no gameplay effect, as specified.
+- **Admin engine-temp override** (`PublishAdminOverridePropulsionTemp`) now carries live `altitude_m` and the live `SoiBody` so the ≤1-tick override payload stays consistent with the real state publish. PlayerShip overwrites it on the next telemetry tick regardless.
+- **`SoiBody` naming**: used `SoiBody` on `PropulsionState` (matches the codebase's PascalCase for bus fields; the MQTT key remains snake_case `soi_body`).
+- **Planet registers itself on SimBus** (`SimBus.Instance.Planet = this` in `Planet._Ready`) so the admin panel reaches it without a scene reference.
 
 ## TODOs for future batches
-- Wire `ScannerBearing` into telemetry or module state once the display panel has a bearing readout
-- Implement SCAN gameplay for Prospecting Suite SK5 (currently logged/ignored)
-- Implement `MissileLockWarning` from gameplay (missile tracking system)
-- Confirm loadout payload shape with display client (assumed `{"slots":{"1":{...}}}`)
+
+- Rebuild mesh/collider (and reposition) from `[Export]` values if runtime planet-radius tuning is ever wanted.
+- Atmosphere is visual-only: real atmospheric drag/entry effects are deliberately deferred.
+- Revisit `_IntegrateForces` gravity read path if the planet ever becomes dynamic or multithreaded physics is enabled.
+- Decide where the planet name ("Kael") lives once lore/star-system data exists; `SoiName` is currently a single `[Export]` string.
+
+## Environment confirmed
+
+Godot 4.7 / .NET 8 (`Godot.NET.Sdk/4.7.1`, `net8.0`). Build verified locally via `dotnet build` (0 errors; warnings are the established CS8632 set). MSTest discovery doesn't run in this headless environment (pre-existing; requires the Godot runtime) — the three existing tests only assert unchanged export defaults.
