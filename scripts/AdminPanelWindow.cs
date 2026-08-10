@@ -70,9 +70,7 @@ public partial class AdminPanelWindow : Window
         public bool HasPower;
         public HSlider HealthSlider;
         public CheckButton DisabledCheck;
-        public SpinBox RepairQueueBox;
         public LineEdit EffectsEdit;
-        public SpinBox RepairEtaBox;
         public SpinBox PowerAllocBox;
         public SpinBox PowerMaxBox;
     }
@@ -513,10 +511,6 @@ public partial class AdminPanelWindow : Window
             sys.DisabledCheck.Toggled += _ => PublishEngSys(sys);
             root.AddChild(sys.DisabledCheck);
 
-            sys.RepairQueueBox = MakeSpinBox(0, 99, 0);
-            sys.RepairQueueBox.ValueChanged += _ => PublishEngSys(sys);
-            root.AddChild(Labeled("Repair Queue Pos (0 = null)", sys.RepairQueueBox));
-
             sys.EffectsEdit = new LineEdit
             {
                 PlaceholderText = "comma-separated",
@@ -524,10 +518,6 @@ public partial class AdminPanelWindow : Window
             };
             sys.EffectsEdit.TextChanged += _ => PublishEngSys(sys);
             root.AddChild(Labeled("Effects", sys.EffectsEdit));
-
-            sys.RepairEtaBox = MakeSpinBox(0, 9999, 0);
-            sys.RepairEtaBox.ValueChanged += _ => PublishEngSys(sys);
-            root.AddChild(Labeled("Repair ETA s (0 = null)", sys.RepairEtaBox));
 
             if (hasPower)
             {
@@ -553,15 +543,13 @@ public partial class AdminPanelWindow : Window
 
     private void PublishEngSys(EngSysState sys)
     {
-        int? repairQueue = (int)sys.RepairQueueBox.Value > 0 ? (int)sys.RepairQueueBox.Value : (int?)null;
-        int? repairEta   = (int)sys.RepairEtaBox.Value   > 0 ? (int)sys.RepairEtaBox.Value   : (int?)null;
         int? powerAlloc  = sys.HasPower ? (int?)((int)sys.PowerAllocBox.Value) : null;
         int? powerMax    = sys.HasPower ? (int?)((int)sys.PowerMaxBox.Value)   : null;
         var effects = sys.EffectsEdit.Text
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         SimBus.Instance?.PublishAdminOverrideEngineering(
             sys.Id, (int)sys.HealthSlider.Value, sys.DisabledCheck.ButtonPressed,
-            repairQueue, effects, repairEta, powerAlloc, powerMax);
+            effects, powerAlloc, powerMax);
     }
 
     private Control BuildRepairQueueTab()

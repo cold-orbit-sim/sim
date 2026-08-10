@@ -615,9 +615,7 @@ public partial class SimBus : Node
                     power_unit = (string?)"kW",
                     power_max = (int?)500,
                     disabled = false,
-                    repair_queue_position = (int?)null,
                     effects = System.Array.Empty<object>(),
-                    repair_eta_seconds = (int?)null,
                 });
             }
             else
@@ -630,9 +628,7 @@ public partial class SimBus : Node
                     power_unit = (string?)null,
                     power_max = (int?)null,
                     disabled = false,
-                    repair_queue_position = (int?)null,
                     effects = System.Array.Empty<object>(),
-                    repair_eta_seconds = (int?)null,
                 });
             }
 
@@ -716,10 +712,8 @@ public partial class SimBus : Node
     private void PublishRepairQueueStubs()
     {
         // MOCK — repair-queue contract. Ordered list of subsystems awaiting
-        // repair, published as a dedicated topic (the per-system
-        // repair_queue_position field on the engineering topic is a positional
-        // hint only; this queue is the order of work). Replace with real
-        // repair logic when the damage/repair system exists.
+        // repair, published as a dedicated topic. Replace with real repair
+        // logic when the damage/repair system exists.
         var queue = new object[]
         {
             new { system = "engines", status = "in_progress", repair_eta_seconds = (int?)180, health = 35 },
@@ -1112,8 +1106,7 @@ public partial class SimBus : Node
 
     public void PublishAdminOverrideEngineering(
         string systemId, int health, bool disabled,
-        int? repairQueuePos, string[] effects, int? repairEtaS,
-        int? powerAllocated, int? powerMax)
+        string[] effects, int? powerAllocated, int? powerMax)
     {
         // ADMIN OVERRIDE — replace when real sim logic exists
         string? powerUnit = powerAllocated.HasValue ? "kW" : null;
@@ -1125,9 +1118,7 @@ public partial class SimBus : Node
             power_unit          = powerUnit,
             power_max           = powerMax,
             disabled,
-            repair_queue_position = repairQueuePos,
             effects,
-            repair_eta_seconds  = repairEtaS,
         });
         Mqtt.Publish($"coldorbit/output/engineering/{systemId}/state", payload,
             MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
