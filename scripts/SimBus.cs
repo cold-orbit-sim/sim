@@ -906,6 +906,12 @@ public partial class SimBus : Node
         // PlayerShip each physics frame.
         public string SoiBody { get; private set; } = "Deep Space";
 
+        // Dampener mode, derived from physics each frame:
+        //   "off"          — dampeners disabled or thrust active
+        //   "station_keep" — dampeners on, low tangential speed (hovering)
+        //   "orbit_hold"   — dampeners on, high tangential speed (arc-holding)
+        public string DampenerMode { get; private set; } = "off";
+
         // True whenever propulsion is disabled, regardless of cause. Currently
         // only ever set from the overheat cutoff below, but named and read
         // independently of that so a future damage/sabotage system can set it
@@ -924,7 +930,7 @@ public partial class SimBus : Node
         public void PublishTelemetry(
             float propellantMix, float engineTemp, bool overheated, bool propulsionDisabled,
             float velocity, float accelerationMs2, float throttleInput, bool reverseEnabled,
-            float altitudeM, string soiBody)
+            float altitudeM, string soiBody, string dampenerMode)
         {
             PropellantMix = propellantMix;
             EngineTemp = engineTemp;
@@ -936,6 +942,7 @@ public partial class SimBus : Node
             ReverseEnabled = reverseEnabled;
             AltitudeM = altitudeM;
             SoiBody = soiBody;
+            DampenerMode = dampenerMode;
         }
     }
 
@@ -1086,6 +1093,7 @@ public partial class SimBus : Node
             mix = MathF.Round(p.PropellantMix, 3),
             rcs_enabled = p.RcsEnabled,
             dampeners_enabled = p.DampenersEnabled,
+            dampener_mode = p.DampenerMode,
             reverse_enabled = p.ReverseEnabled,
             engines = new object[]
             {

@@ -29,6 +29,7 @@ public partial class AdminPanelWindow : Window
     private HSlider _propMixSlider;
     private CheckButton _propRcsToggle;
     private CheckButton _propDampenerToggle;
+    private Label _propDampenerModeLabel;
     private CheckButton _propReverseToggle;
     private HSlider _propEngineTempSlider;
     private Label _propVelocityLabel;
@@ -354,6 +355,9 @@ public partial class AdminPanelWindow : Window
         _propDampenerToggle.Toggled += pressed =>
             SimBus.Instance.Propulsion.DampenersEnabled = pressed;
         root.AddChild(_propDampenerToggle);
+
+        _propDampenerModeLabel = new Label { Text = "off" };
+        root.AddChild(Labeled("Dampener mode (display-only)", _propDampenerModeLabel));
 
         _propReverseToggle = new CheckButton { Text = "Reverse (display-only)" };
         root.AddChild(_propReverseToggle);
@@ -1246,6 +1250,7 @@ public partial class AdminPanelWindow : Window
         _propMixSlider.SetValueNoSignal(p.MixTarget);
         _propRcsToggle.SetPressedNoSignal(p.RcsEnabled);
         _propDampenerToggle.SetPressedNoSignal(p.DampenersEnabled);
+        if (_propDampenerModeLabel.Text != p.DampenerMode) _propDampenerModeLabel.Text = p.DampenerMode;
         _propReverseToggle.SetPressedNoSignal(p.ReverseEnabled);
         _propEngineTempSlider.SetValueNoSignal(p.EngineTemp);
         _propVelocityLabel.Text = $"{p.Velocity:0.00} m/s";

@@ -30,7 +30,7 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float LinearDampenerGain { get; set; } = 2.0f;  // higher = snappier auto-brake
     [Export] public float AngularDampenerGain { get; set; } = 2.0f;
     [Export] public float MixShiftDuration { get; set; } = 1.0f;    // seconds, Economy<->Power lerp
-    [Export] public float HeatGenerationRate { get; set; } = 70f;   // deg/sec at full throttle+power
+    [Export] public float HeatGenerationRate { get; set; } = 35f;   // deg/sec at full throttle+power
     [Export] public float CoolingRate { get; set; } = 0.02f;        // fraction of current temp/sec
     [Export] public float MaxEngineTemp { get; set; } = 900f;       // deg C, propulsion cutoff
     [Export] public float PowerPerEnginekW { get; set; } = 1500f;   // kW per engine at full throttle
@@ -70,9 +70,12 @@ public partial class PlayerShip : RigidBody3D
     // non-moving StaticBody3D (see Planet.cs threading note).
     private Planet _planet;
 
-    // Altitude above the planet surface in metres. Negative when below the
-    // surface (crash state). Computed each physics frame in _PhysicsProcess.
+    // Altitude above the planet surface in metres. Negative below the surface.
     private float _altitudeM = 0f;
+
+    // Dampener mode derived each physics frame: "off", "station_keep", "orbit_hold".
+    // Written in HandleThrust, published to SimBus and MQTT each telemetry tick.
+    private string _dampenerMode = "off";
 
     // Alert state tracking -- raise/clear only on transitions so we don't
     // republish the full alerts array on every physics frame.
@@ -277,6 +280,7 @@ public partial class PlayerShip : RigidBody3D
     {
         _thrustInput = 0f;
         _reverseEnabled = false;
+        _dampenerMode = "off"; // overwritten below if dampeners engage
 
         if (Input.IsActionPressed("thrust_forward")) _thrustInput += 1f;
         if (Input.IsActionPressed("thrust_reverse")) { _thrustInput += 1f; _reverseEnabled = true; }
@@ -290,30 +294,33 @@ public partial class PlayerShip : RigidBody3D
 
             _engineTemp += _thrustInput * _propellantMix * HeatGenerationRate * dt;
         }
-        else if (_thrustInput == 0f && SimBus.Instance.Propulsion.DampenersEnabled)
+        // Gravity counter: always active when dampeners are on near a planet,
+        // even while thrusting — prevents the ship from falling during maneuvers.
+        // Velocity cancellation (station-keep / orbit-hold) only engages when
+        // no main thrust is being applied.
+        if (SimBus.Instance.Propulsion.DampenersEnabled && _planet != null)
         {
-            // Velocity-proportional brake toward zero. Not a true PD
-            // controller, just enough to feel like the ship "wants" to
-            // stop drifting when you let go. Deliberately does NOT engage
-            // just because overheat blocked thrust below -- dampeners are
-            // a "no active input" behavior, not an overheat side effect,
-            // so an overheated ship coasts on residual velocity instead of
-            // snap-braking while the player is still holding thrust.
-            //
-            // Near a planet (batch 14) only the lateral component of
-            // velocity is damped -- the component along the gravity vector
-            // is left alone so the ship falls correctly when idle instead
-            // of hovering against gravity indefinitely.
-            if (_planet != null)
-            {
-                Vector3 gravDir = (_planet.GlobalPosition - GlobalPosition).Normalized();
-                Vector3 lateralVelocity = LinearVelocity - gravDir * LinearVelocity.Dot(gravDir);
-                ApplyCentralForce(-lateralVelocity * LinearDampenerGain * Mass);
-            }
-            else
+            Vector3 toCenter = _planet.GlobalPosition - GlobalPosition;
+            Vector3 gravDir = toCenter.Normalized();
+            float distSq = toCenter.LengthSquared();
+            float gravAccel = _planet.GM / distSq;
+            Vector3 gravForce = gravDir * gravAccel * Mass;
+
+            ApplyCentralForce(-gravForce);
+
+            if (_thrustInput == 0f)
             {
                 ApplyCentralForce(-LinearVelocity * LinearDampenerGain * Mass);
+                _dampenerMode = "station_keep";
             }
+            // During thrust near a planet: gravity countered, no velocity damping.
+            // _dampenerMode stays "off".
+        }
+        else if (_thrustInput == 0f && SimBus.Instance.Propulsion.DampenersEnabled)
+        {
+            // No planet, not thrusting: cancel all velocity.
+            ApplyCentralForce(-LinearVelocity * LinearDampenerGain * Mass);
+            _dampenerMode = "station_keep";
         }
 
         // Passive radiative cooling always applies, even mid-burn, so heat
@@ -429,10 +436,14 @@ public partial class PlayerShip : RigidBody3D
             ? $"Temp: {_engineTemp:0}C -- PROPULSION DISABLED (overheat)"
             : $"Temp: {_engineTemp:0}C";
 
+        string dampenerLine = _dampenerMode == "station_keep"
+            ? "Dampeners: ON — STATION KEEP"
+            : "Dampeners: OFF";
+
         _debugLabel.Text =
             $"Velocity: {LinearVelocity.Length():0.0} m/s\n" +
             $"Alt: {_altitudeM:0} m\n" +
-            $"Dampeners: {(SimBus.Instance.Propulsion.DampenersEnabled ? "ON" : "OFF")} (X to toggle)\n" +
+            dampenerLine + " (X to toggle)\n" +
             $"RCS: {(SimBus.Instance.Propulsion.RcsEnabled ? "ON" : "OFF")} (V to toggle)\n" +
             $"Mix: {mixLabel} (1=Economy, 2=Power)\n" +
             tempLine + "\n" +
@@ -457,7 +468,8 @@ public partial class PlayerShip : RigidBody3D
             throttleInput: _thrustInput,
             reverseEnabled: _reverseEnabled,
             altitudeM: _altitudeM,
-            soiBody: GetSoiBody());
+            soiBody: GetSoiBody(),
+            dampenerMode: _dampenerMode);
     }
 
     // SOI-body label for telemetry: the planet's SoiName while within a loose
@@ -596,6 +608,7 @@ public partial class PlayerShip : RigidBody3D
             mix = MathF.Round(p.PropellantMix, 3),
             rcs_enabled = p.RcsEnabled,
             dampeners_enabled = p.DampenersEnabled,
+            dampener_mode = p.DampenerMode,
             reverse_enabled = p.ReverseEnabled,
             engines = new object[]
             {
