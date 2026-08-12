@@ -320,14 +320,18 @@ public partial class ControlPanelsWindow : Window
 
         _ftlDestLabel = new Label
         {
-            Text = SimBus.FtlState.Destinations[0],
+            Text = SimBus.Instance.Ftl.SelectedDisplayName,
             CustomMinimumSize = new Vector2(120, 0),
             HorizontalAlignment = HorizontalAlignment.Center,
         };
         _ftlDestPrev = new Button { Text = "◀" };
         _ftlDestNext = new Button { Text = "▶" };
-        _ftlDestPrev.Pressed += () => { CycleFtlDestination(-1); PublishFtlCommand(); };
-        _ftlDestNext.Pressed += () => { CycleFtlDestination(1); PublishFtlCommand(); };
+        // Publish the action only; SimBus.HandleFtlCommand is the single
+        // authority that cycles the selection and republishes target/system.
+        // The label follows via SyncFtlFromBus, so no local mutation here (a
+        // local CycleDestination would double-step once the message loops back).
+        _ftlDestPrev.Pressed += () => PublishFtlDestAction("prev");
+        _ftlDestNext.Pressed += () => PublishFtlDestAction("next");
         root.AddChild(Labeled("Destination Select", Row(_ftlDestPrev, _ftlDestLabel, _ftlDestNext)));
 
         // VECTOR/JUMP are momentary presses (not toggles) -- each one sets a
@@ -360,12 +364,7 @@ public partial class ControlPanelsWindow : Window
         return root;
     }
 
-    private static void CycleFtlDestination(int direction)
-    {
-        var ftl = SimBus.Instance.Ftl;
-        int count = SimBus.FtlState.Destinations.Length;
-        ftl.DestinationIndex = (ftl.DestinationIndex + direction + count) % count;
-    }
+
 
     // --- coldorbit/input/... publishing (stand-in for real panel MCUs) --
 
@@ -393,10 +392,25 @@ public partial class ControlPanelsWindow : Window
         string payload = JsonSerializer.Serialize(new
         {
             armed = ftl.Armed,
-            destination_index = ftl.DestinationIndex,
             updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         });
         SimBus.Instance.Mqtt.Publish("coldorbit/input/ftl/command", payload, MqttQualityOfServiceLevel.ExactlyOnce, retain: true);
+    }
+
+    // Destination navigation is a momentary prev/next action on the physical
+    // panel, not a retained absolute index -- publish it as a fire-and-forget
+    // event mirroring the two nav buttons. Shares the ftl/command topic with
+    // the arm toggle, but is NOT retained: replaying a stale "next" on
+    // reconnect would silently walk the selection.
+    private static void PublishFtlDestAction(string action)
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        string payload = JsonSerializer.Serialize(new
+        {
+            dest_action = action,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish("coldorbit/input/ftl/command", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: false);
     }
 
     // Momentary button press/release: per-topic (topic is the event, not a
@@ -692,7 +706,7 @@ public partial class ControlPanelsWindow : Window
         bool destLocked = ftl.Phase is not FtlPhase.Idle;
         _ftlDestPrev.Disabled = destLocked;
         _ftlDestNext.Disabled = destLocked;
-        _ftlDestLabel.Text = SimBus.FtlState.Destinations[ftl.DestinationIndex];
+        _ftlDestLabel.Text = ftl.SelectedDisplayName;
 
         _ledBlinkClock += delta;
         bool blinkOn = (_ledBlinkClock % 0.5) < 0.25;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Godot;
@@ -70,6 +71,7 @@ public partial class SimBus : Node
         Mqtt.Subscribe("coldorbit/input/comms/master_caut");
         Mqtt.Subscribe("coldorbit/input/alerts/acknowledge");
         Mqtt.Subscribe("coldorbit/input/ship/loadout");
+        Mqtt.Subscribe("coldorbit/input/ftl/command");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/arm");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/softkey");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_a");
@@ -120,6 +122,15 @@ public partial class SimBus : Node
         if (topic.StartsWith(hpPrefix, StringComparison.Ordinal))
         {
             HandleHardpointInput(topic.Substring(hpPrefix.Length), payload);
+            return;
+        }
+
+        // FTL nav uses a bespoke payload (no `state` field) on the command
+        // topic: an `armed` bool and/or a `dest_action` (prev/next) selection
+        // change may appear together or separately.
+        if (topic == "coldorbit/input/ftl/command")
+        {
+            HandleFtlCommand(payload);
             return;
         }
 
@@ -177,6 +188,54 @@ public partial class SimBus : Node
             default:
                 GD.PrintErr($"SimBus: unhandled topic {topic}");
                 break;
+        }
+    }
+
+    // FTL panel command. Bespoke payload; both fields are optional and may
+    // arrive together:
+    //   { armed: bool }                     — arm/disarm the drive
+    //   { dest_action: "prev" | "next" }    — cycle the flat destination list
+    // A selection change republishes the resolved nav target and system detail.
+    private void HandleFtlCommand(string payload)
+    {
+        bool selectionChanged = false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("armed", out var a) &&
+                (a.ValueKind == JsonValueKind.True || a.ValueKind == JsonValueKind.False))
+            {
+                Ftl.Armed = a.GetBoolean();
+            }
+
+            // Destination can only be (re-)selected while idle -- once VECTOR
+            // locks it in, prev/next stop having an effect (mirrors the dev
+            // panel disabling the nav buttons when Phase != Idle).
+            if (root.TryGetProperty("dest_action", out var d) && d.ValueKind == JsonValueKind.String
+                && Ftl.Phase is FtlPhase.Idle)
+            {
+                switch (d.GetString())
+                {
+                    case "prev": Ftl.CycleDestination(-1); selectionChanged = true; break;
+                    case "next": Ftl.CycleDestination(1);  selectionChanged = true; break;
+                    default:
+                        GD.PrintErr($"SimBus: unknown ftl dest_action '{d.GetString()}'");
+                        break;
+                }
+            }
+        }
+        catch (JsonException ex)
+        {
+            GD.PrintErr($"SimBus: malformed ftl/command payload: {ex.Message}");
+            return;
+        }
+
+        if (selectionChanged)
+        {
+            PublishFtlSystem();
+            PublishFtlNavTarget();
         }
     }
 
@@ -551,6 +610,12 @@ public partial class SimBus : Node
         for (int slot = 1; slot <= 4; slot++)
             PublishHardpointModule(slot);
         PublishCurrentAlerts();
+        // Publish the "no selection yet" marker first, then immediately the
+        // resolved default selection (Kerath star) and its system detail, so a
+        // fresh/reconnected Map view sees both the reset and the current target.
+        PublishFtlNavTargetNone();
+        PublishFtlSystem();
+        PublishFtlNavTarget();
     }
 
     // Republishes the current alerts array after a broker reconnect, so
@@ -560,6 +625,82 @@ public partial class SimBus : Node
     {
         var payload = JsonSerializer.Serialize(Alerts.Active);
         Mqtt.Publish("coldorbit/output/alerts", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // Resolved FTL nav target for the touchscreen Map view (§3.1b). Retained so
+    // a fresh subscriber sees the current selection immediately. Published on
+    // every selection change, at startup, and on broker reconnect.
+    internal void PublishFtlNavTarget()
+    {
+        var sys = Ftl.SelectedSystem;
+        float dist = Ftl.RangeAu;
+
+        object payload;
+        if (Ftl.IsStarSelected)
+        {
+            payload = new
+            {
+                type = "star",
+                system_id = sys.Id,
+                name = sys.StarName,
+                star_type = sys.StarType,
+                planet_count = sys.Planets.Length,
+                distance_au = MathF.Round(dist, 1),
+                spool_time_s = (int)Ftl.SpoolTimeSeconds,
+            };
+        }
+        else
+        {
+            payload = new
+            {
+                type = "planet",
+                system_id = sys.Id,
+                name = sys.Planets[Ftl.SelectedPlanetIndex].Name,
+                system_name = sys.StarName,
+                star_type = sys.StarType,
+                distance_au = MathF.Round(dist, 1),
+                spool_time_s = (int)Ftl.SpoolTimeSeconds,
+            };
+        }
+
+        Mqtt.Publish("coldorbit/output/ftl/target", JsonSerializer.Serialize(payload),
+                     MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // Startup-only "no selection yet" marker on ftl/target. The real default
+    // (Kerath star) follows immediately after, per the batch 16 contract.
+    private void PublishFtlNavTargetNone()
+    {
+        Mqtt.Publish("coldorbit/output/ftl/target",
+                     JsonSerializer.Serialize(new { type = "none" }),
+                     MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // System detail for the touchscreen Map view (§3.1b). Only populated when a
+    // planet is selected — the Map view uses it to draw the in-system layout.
+    // A star (or no) selection publishes a null system_id so the view clears.
+    // Retained; published alongside ftl/target on every selection change.
+    internal void PublishFtlSystem()
+    {
+        object payload;
+        if (!Ftl.IsStarSelected)
+        {
+            var sys = Ftl.SelectedSystem;
+            payload = new
+            {
+                system_id = sys.Id,
+                star_name = sys.StarName,
+                star_type = sys.StarType,
+                planets = sys.Planets.Select(p => new { name = p.Name }).ToArray(),
+            };
+        }
+        else
+        {
+            payload = new { system_id = (string?)null };
+        }
+
+        Mqtt.Publish("coldorbit/output/ftl/system", JsonSerializer.Serialize(payload),
+                     MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 
     // ── Startup stubs ────────────────────────────────────────────────────────
@@ -942,16 +1083,81 @@ public partial class SimBus : Node
 
     public sealed class FtlState
     {
-        public static readonly string[] Destinations =
-            { "Sol", "Alpha Centauri", "Wolf 359", "Tau Ceti", "Proxima Centauri" };
+        // Two-layer destination selection over the Drift star map (batch 16).
+        // Long-range jumps target a star; in-system jumps target a planet, and
+        // planets are only reachable in the system the ship is already in.
+        public string SelectedSystemId { get; set; } = DefaultSystemId;
+        public int SelectedPlanetIndex { get; set; } = -1; // -1 = star selected
 
-        // AU distances matching the destination list above (fiction, for display only).
-        public static readonly float[] DestinationRangesAu =
-            { 0.5f, 1.4f, 2.8f, 4.1f, 7.2f };
+        // Where the ship currently is. No real travel exists yet, so this is a
+        // fixed default that PlayerShip re-exports for tweaking without a rebuild.
+        public const string DefaultSystemId = "K";
+        public string CurrentSystemId { get; set; } = DefaultSystemId;
+
+        // Spool-up model: charge seconds = Base + distanceAu * PerAu.
+        public float BaseChargeTime { get; set; } = 2f;
+        public float ChargeTimePerDistanceUnit { get; set; } = 0.5f;
+
+        public bool IsStarSelected => SelectedPlanetIndex < 0;
+
+        public DriftData.StarSystem SelectedSystem => DriftData.System(SelectedSystemId);
+
+        // Display name for the current selection: star name, or planet name
+        // when drilled into a planet.
+        public string SelectedName
+            => IsStarSelected
+                ? SelectedSystem.StarName
+                : SelectedSystem.Planets[SelectedPlanetIndex].Name;
+
+        // "Star" for a star selection, "Star / Planet" when drilled into a
+        // planet. Used by the in-Godot dev panel label so both the system and
+        // the planet are visible at a glance.
+        public string SelectedDisplayName
+            => IsStarSelected
+                ? SelectedSystem.StarName
+                : $"{SelectedSystem.StarName} / {SelectedSystem.Planets[SelectedPlanetIndex].Name}";
+
+        // Straight-line range to the current selection, in AU, from the real
+        // star chart. In-system (planet) targets share the star's coordinates,
+        // so a small per-planet increment is added so each planet reads a
+        // slightly different (short) range instead of collapsing to the star's.
+        public float RangeAu
+        {
+            get
+            {
+                float baseAu = DriftData.DistanceAu(CurrentSystemId, SelectedSystemId);
+                if (!IsStarSelected)
+                    baseAu += 0.1f * (SelectedPlanetIndex + 1);
+                return baseAu;
+            }
+        }
+
+        // Charge/spool-up time for the current selection (Task 3).
+        public float SpoolTimeSeconds => BaseChargeTime + RangeAu * ChargeTimePerDistanceUnit;
+
+        // Index of the current selection in the shared flat destination list.
+        public int DestinationIndex
+            => DriftData.DestinationIndexOf(SelectedSystemId, SelectedPlanetIndex);
+
+        // Move the selection by `direction` (+1 next, −1 prev) through the flat
+        // destination list, wrapping at both ends.
+        public void CycleDestination(int direction)
+        {
+            var list = DriftData.Destinations;
+            int i = (DestinationIndex + direction + list.Length) % list.Length;
+            SelectTo(list[i]);
+        }
+
+        // Point the selection at an explicit destination (used by the Admin
+        // flat picker).
+        public void SelectTo(DriftData.Destination d)
+        {
+            SelectedSystemId = d.SystemId;
+            SelectedPlanetIndex = d.PlanetIndex;
+        }
 
         // --- Commands: written by the FTL panel, read by PlayerShip ---
         public bool Armed { get; set; }
-        public int DestinationIndex { get; set; }
 
         // One-shot button presses: the panel sets these true, PlayerShip
         // consumes and clears them on the next physics frame.

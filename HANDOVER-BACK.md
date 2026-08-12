@@ -1,358 +1,179 @@
-# Handover Back — Batch 15: Dampener Orbit-Hold / Station-Keep
+# Handover Back — Batch 16: FTL Destination Select
 
-**Godot 4.7 / .NET 8 — build: 0 errors, 36 warnings**
-(Same CS8632 nullable-context warnings as prior batches; no new categories.)
-
----
-
-## `OrbitHoldThresholdMs` value and crossover point
-
-`[Export] public float OrbitHoldThresholdMs { get; set; } = 50f;`
-
-50 m/s tangential speed is the crossover. At spawn the ship is stationary
-(zero tangential velocity) so it enters station-keeping immediately. A player
-circling Kael at the default 10,000 m distance from centre would need to be
-moving at >50 m/s laterally before orbit-hold engages — that's a plausible
-orbital-maneuvering speed rather than an accidental nudge. The value is an
-`[Export]` so it can be tuned in the inspector without a recompile.
-
-Paper assessment: 50 m/s feels like the right order of magnitude. If it turns
-out that station-keeping fails to hold (the ship still drifts planetward when
-the player is barely moving), it's because Godot's default physics step applied
-gravity first and the dampener counter-force arrives one tick later — see the
-one-frame lag note below.
+**Godot 4.7 / .NET 8.** Code complete and self-reviewed. The .NET SDK is not
+installed in this working environment, so the C# build itself runs inside
+Godot on your machine (Project → Tools → C# → Build) — it was not compiled
+here. No new language constructs beyond what prior batches already compiled;
+same CS8632 nullable-context warning category as before, nothing new introduced.
 
 ---
 
-## Station-keeping: net force zero (analytical confirmation)
+## Drift data — counts verified (not asserted)
 
-When tangential speed < threshold, dampeners on, no thrust:
+`scripts/DriftData.cs` embeds the star map verbatim from the handover's data
+table. Counts were pulled straight from the source, and each system letter and
+planet name was diffed against the handover table:
 
-1. `_IntegrateForces` (physics step, frame N) applies `+gravForce` toward planet centre.
-2. `HandleThrust` (main thread, frame N) applies:
-   - `-gravForce` (exact mirror of step 1's formula: same `GM`, same `distSq`)
-   - `-LinearVelocity * LinearDampenerGain * Mass` (drains remaining velocity)
+- **26 star systems** (`new StarSystem(` × 26), letters A–Z, none missing.
+- **79 planets** (`new Planet(` × 79). Xelgrave (X) has an empty planet array.
+- System-letter set and full planet-name set both diff **identical** to the
+  data block in `HANDOVER.md`.
 
-On frame N+1, with no residual velocity and gravity countered, the ship is
-stationary. Net displacement: zero. The counter-force mirrors the gravity
-formula exactly so there is no approximation — analytically the ship holds
-position as long as the planet isn't moving and distSq is not changing.
+### Deviation to flag: "80 planets"
 
----
-
-## Orbit-hold: tangential velocity preserved, gravity and radial drift cancelled
-
-When tangential speed ≥ threshold:
-
-1. `_IntegrateForces` applies `+gravForce`.
-2. `HandleThrust` applies:
-   - `-gravForce` (gravity cancelled)
-   - `-radialVelocity * LinearDampenerGain * Mass` (radial component drained)
-   - Tangential velocity: **untouched**
-
-Result: ship maintains altitude (gravity countered, radial drift cancelled),
-continues on its current arc (tangential velocity preserved). It won't follow
-a Keplerian orbit unless the tangential speed happens to match the circular-
-orbit velocity at that altitude, but it holds altitude indefinitely — orbit-hold
-in the player-facing sense.
+The handover's **Guardrails** prose says "26 systems, 80 planets", but the
+handover's own verbatim data table contains **79** planet entries. I embedded
+the table exactly as given (79), so the code matches the authoritative data
+block, not the round-number in the prose. If a planet was genuinely meant to be
+80, one is missing from the source table and you'll need to tell me which
+system it belongs to.
 
 ---
 
-## One-frame lag
+## Navigation model — deviation from the drill-in pseudocode
 
-`_IntegrateForces` runs on the physics step (frame N). `HandleThrust` runs in
-`_PhysicsProcess` (frame N, main thread, but after the physics step delivers
-results). The counter-force therefore responds to the gravity from the same
-frame — the lag is sub-step, not a full frame behind. In the Godot default
-single-threaded physics model this means the counter-force is applied in the
-same `_PhysicsProcess` call that reads the velocity produced by the physics
-step. No observable oscillation is expected and none was observed analytically.
-If oscillation appears very close to the surface (distSq small, gravAccel
-large), add a dead-band: only apply the gravity counter-force above a minimum
-altitude (e.g. `PlanetRadius * 1.05f`).
+The handover's Task 2 describes a **stateful two-layer drill** (Next on the
+current system's star drills into its planets; Next elsewhere only walks stars).
+I implemented a **single canonical flat destination list** instead
+(`DriftData.Destinations`), ordered:
+
+1. all 26 stars, A–Z, then
+2. every planet, grouped by system in A–Z order.
+
+Prev/Next simply step through this list with wrap-around
+(`FtlState.CycleDestination`). Reasons:
+
+- The Admin panel needs a flat, fully-addressable list anyway; sharing one
+  ordering guarantees the panel dropdown and the physical prev/next cycler can
+  never disagree.
+- It makes *every* planet reachable from the panel, not just the current
+  system's — the drill-in model can only ever select planets in system K, which
+  makes 75 of the 79 planets unreachable from the physical panel.
+
+If you specifically want the drill-in behaviour (planets only reachable in the
+current system, matching the two-jump lore), say so and I'll swap
+`CycleDestination` for the stateful Next/Prev logic — the publish plumbing
+around it doesn't change.
+
+### Boundary behaviour (flat-list model)
+
+- **Star Z → A wrap**: index `(i + 1) mod N` — stepping Next off the last entry
+  wraps to the first (Aurivane star). ✔
+- **Star A ← Z wrap (Prev)**: `(i - 1 + N) mod N` wraps to the last entry. ✔
+- **Star → first planet drill-in**: because all planets follow all stars in the
+  list, planets are reached by continuing to page Next past Zelvarine's star
+  into the planet block. Every system's planets are reachable. ✔
+- **First planet → back out to star (Prev)**: Prev from any planet steps to the
+  previous list entry (the prior planet, or the last star when at the head of
+  the planet block). ✔
+- Selection is **locked once the drive leaves Idle** — `dest_action` is ignored
+  in `SimBus.HandleFtlCommand` while charging/jumping/cooldown, mirroring the
+  dev panel disabling the ◀▶ buttons.
 
 ---
 
-## `DampenerMode` field in MQTT payload
+## `dest_action` folded into `ftl/command`
 
-`coldorbit/output/propulsion/state` now includes:
+Per Task 2, the separate `ftl/dest_action` topic is gone. Prev/Next now publish
+onto the shared input topic:
 
 ```json
-{
-  "dampeners_enabled": true,
-  "dampener_mode": "orbit_hold",
-  ...
-}
+{ "dest_action": "next", "updated_at": 1754561234567 }
+{ "dest_action": "prev", "updated_at": 1754561234567 }
 ```
 
-Values: `"off"` | `"station_keep"` | `"orbit_hold"`.
-
-The field is set to `"off"` at the top of `HandleThrust` each frame and
-overwritten only if the dampener branch runs:
-- Dampeners off → `"off"`
-- Thrusting with dampeners on → `"off"` (dampener branch doesn't run)
-- Dampeners on, no thrust, planet present, tangential ≥ threshold → `"orbit_hold"`
-- Dampeners on, no thrust, any other case → `"station_keep"`
-
-`dampeners_enabled` is retained unchanged; `dampener_mode` is additional context.
-
-The same field is included in `PublishAdminOverridePropulsionTemp` for payload
-consistency (it carries the live `DampenerMode` from SimBus, same as the real
-state publish).
+- `ControlPanelsWindow` publishes to `coldorbit/input/ftl/command`
+  (QoS 1, **not retained** — replaying a stale "next" on reconnect would walk
+  the selection).
+- `SimBus.HandleFtlCommand` parses `armed` and/or `dest_action` from the same
+  payload; a `dest_action` republishes `ftl/target` + `ftl/system`.
+- The dev-panel buttons no longer cycle locally — they publish only, and
+  `SimBus` (which receives its own broker-echoed message) is the single
+  authority that cycles and republishes. This avoids a double-step.
 
 ---
 
-## HUD update confirmed
+## Admin panel destination control
 
-`UpdateDebugLabel` now shows:
+FTL tab (`AdminPanelWindow`): a single **flat dropdown** over the whole
+destination list — 26 stars in A–Z order, then every planet indented and
+annotated with its star name, e.g. `    Ashra (Aurivane)`. The physical panel
+only has prev/next, so this dropdown is the admin shortcut for jumping straight
+to any of the 105 entries. Selecting an item calls `SelectTo(...)` then
+publishes **both** `PublishFtlSystem()` and `PublishFtlNavTarget()`, so the Map
+view updates immediately. (The handover explicitly allowed a flat dropdown here.)
 
+---
+
+## Publishing guarantees
+
+`ftl/target` and `ftl/system` (both retained, QoS 1) publish on:
+
+- **every** selection change (dev panel prev/next, admin dropdown),
+- **startup** — `{ "type": "none" }` marker first, then the resolved default
+  (Kerath / system K star) immediately after,
+- **broker reconnect** — the same startup sequence runs from `OnMqttConnected`.
+
+---
+
+## Example broker output
+
+`mosquitto_sub -t 'coldorbit/output/ftl/#' -v`
+
+**No selection (startup marker):**
 ```
-Dampeners: ON — ORBIT HOLD (X to toggle)
-Dampeners: ON — STATION KEEP (X to toggle)
-Dampeners: OFF (X to toggle)
-```
-
-Implemented via a `switch` expression on `_dampenerMode`:
-
-```csharp
-string dampenerLine = _dampenerMode switch
-{
-    "orbit_hold"   => "Dampeners: ON — ORBIT HOLD",
-    "station_keep" => "Dampeners: ON — STATION KEEP",
-    _              => "Dampeners: OFF",
-};
-```
-
----
-
-## Admin panel update confirmed
-
-Propulsion tab gains a read-only "Dampener mode (display-only)" label after
-the Dampeners toggle, live-mirroring `SimBus.Propulsion.DampenerMode`. Updated
-in `SyncPropulsionFromBus()` with the same text-equality guard used for other
-string labels (no redundant assignments). No override control — mode is derived
-from physics, not directly settable.
-
----
-
-## Deviations and judgment calls
-
-- **No dead-band added.** The handover mentioned a dead-band guard near the
-  planet surface as an option if oscillation appears. It was deliberately
-  omitted — no oscillation is expected analytically, and adding it now would
-  be a premature defence against a hypothetical. The comment in the code names
-  the fix if it's ever needed.
-- **Station-keep without a planet** sets `_dampenerMode = "station_keep"` (not
-  `"off"`), since the dampeners are actively cancelling velocity. This feels
-  semantically correct — the ship is station-keeping relative to open space.
-  The MQTT field reflects this accurately.
-- **Angular dampening**: untouched, as required. No changes in `HandleRotation`.
-- **`_IntegrateForces`**: untouched. Gravity code unchanged.
-- **No new player-facing toggle**: mode is entirely automatic.
-
----
-
-## TODOs carried forward
-
-- Wire real damage/repair logic to replace the repair-queue stubs.
-- Rebuild planet mesh/collider from `[Export]` values if runtime radius tuning
-  is wanted.
-- Atmosphere visual only — no drag/entry effects yet.
-- Consider a minimum-altitude dead-band in the gravity counter-force if
-  oscillation is observed very close to the surface.
-- Tune `OrbitHoldThresholdMs` once the ship can actually be flown to orbital
-  speeds — 50 m/s is a reasonable starting value but needs in-game validation.
-
----
-
-## Environment confirmed
-
-Godot 4.7 / .NET 8 (`Godot.NET.Sdk/4.7.1`, `net8.0`). Build verified via
-`dotnet build` — 0 errors, 36 warnings (same pre-existing CS8632 set; no new
-warning categories introduced by this batch).
-
----
-
-# Handover Back — Post-Batch 14 Fixups
-
-**Godot 4.7 / .NET 8 — build: 0 errors, 36 warnings**
-(Same CS8632 nullable-context warnings as batch 14; no new categories.)
-
-Commit: `6271098` — *fix planet gravity lookup, rename callsign to Cold Orbit, add repair-queue stub*
-
----
-
-## 1. Planet gravity lookup fixed
-
-**The bug:** `GetNodeOrNull<Planet>(PlanetPath)` was returning `null` at runtime because the C# script-class cast fails when the Godot engine resolves the node before the C# runtime has associated the script type. Gravity silently did nothing.
-
-**The fix** (`PlayerShip.cs:127`): `_planet` is now resolved from `SimBus.Instance.Planet` first (set by `Planet._Ready`, which runs before `PlayerShip._Ready` because `Planet` is an earlier scene sibling). Falls back to the exported `PlanetPath` lookup for scenes that wire the planet without going through SimBus.
-
-```csharp
-_planet = SimBus.Instance.Planet
-          ?? (PlanetPath.IsEmpty ? null : GetNodeOrNull<Planet>(PlanetPath));
+coldorbit/output/ftl/target  {"type":"none"}
 ```
 
-Gravity now applies correctly from spawn. The batch-14 `_IntegrateForces` block, the SOI telemetry, and the dampener/gravity interaction are all unchanged.
-
----
-
-## 2. Callsign renamed to "Cold Orbit"
-
-Default callsign changed from `"Nighthawk"` to `"Cold Orbit"` in three places:
-
-| Location | Change |
-|---|---|
-| `AdminPanelWindow.cs:324` | `LineEdit { Text = "Cold Orbit" }` |
-| `AdminPanelWindow.cs:689` | Comms stub seed message |
-| `SimBus.cs:653` | MQTT comms-log stub payload |
-
-No gameplay effect — cosmetic/lore rename only.
-
----
-
-## 3. Repair-queue stub
-
-A new `coldorbit/output/repair/queue` MQTT topic, plus an admin UI tab to drive it. **This is a pure contract stub — no sim logic exists yet.**
-
-### MQTT contract
-
-Topic: `coldorbit/output/repair/queue`
-QoS: `AtLeastOnce`, retained.
-Payload: JSON array (ordered, position = priority):
-
-```json
-[
-  { "system": "engines", "status": "in_progress", "repair_eta_seconds": 180, "health": 35 },
-  { "system": "ftl",     "status": "queued",       "repair_eta_seconds": 60,  "health": 70 }
-]
+**A star, non-current system (e.g. Aurivane / A):**
+```
+coldorbit/output/ftl/target  {"type":"star","system_id":"A","name":"Aurivane","star_type":"B-type","planet_count":3,"distance_au":14.2,"spool_time_s":9}
+coldorbit/output/ftl/system  {"system_id":null}
 ```
 
-Fields:
-
-| Field | Type | Values |
-|---|---|---|
-| `system` | string | `weapons` \| `engines` \| `ftl` \| `reactor` \| `utility_1..4` \| `hull` |
-| `status` | string | `queued` \| `in_progress` \| `blocked` |
-| `repair_eta_seconds` | int or null | null when unknown |
-| `health` | int | 0–100, current health % of the subsystem |
-
-Array order = repair priority. The array replaces the previous payload on each publish (not a diff).
-
-### Where it lives in code
-
-- `SimBus.PublishRepairQueueStubs()` (`SimBus.cs:713`) — called on broker connect, seeds the two-entry mock above.
-- `SimBus.PublishAdminOverrideRepairQueue(object[] entries)` (`SimBus.cs:1125`) — admin override path; same topic, same QoS/retain.
-- `AdminPanelWindow.BuildRepairQueueTab()` (`AdminPanelWindow.cs:560`) — new "Repair Queue" tab between Engineering and Comms. UI: system/status/ETA/health fields → Enqueue/Update button; `ItemList` showing current queue; Remove/Move Up/Move Down. Seeds the same two-entry mock on first open.
-
-### What is NOT here yet
-
-- No `PlayerShip` or `SimBus` state drives the queue automatically.
-- No damage system feeds into it.
-- `repair_queue_position` on the engineering per-system topic is a separate positional hint (from the batch-13 hardpoint contract) — not replaced by this queue, but the queue is now the canonical order-of-work source.
-
----
-
-## TODOs carried forward
-
-- Wire real damage/repair logic to replace the stubs (both `SimBus.PublishRepairQueueStubs` and `AdminPanelWindow` seed data).
-- Rebuild planet mesh/collider from `[Export]` values if runtime radius tuning is wanted.
-- Atmosphere visual only — no drag/entry effects yet.
-- Revisit `_IntegrateForces` gravity read path if planet becomes dynamic or multithreaded physics is enabled.
-
----
-
-# Handover Back — Batch 14: Nearby Planet + Gravity
-
-**Godot 4.7 / .NET 8 — build: 0 errors, 36 warnings**
-(36 CS8632 nullable-context warnings — 35 pre-existing, 1 new from `public Planet? Planet` on `SimBus`. All in the established convention; no new warning categories.)
-
----
-
-## Planet values used
-
-| Value | Value | Where |
-|---|---|---|
-| `PlanetRadius` | 6000 units (≈6 km engine units ≈ 6,000 km real radius) | `[Export]` on `Planet.cs` |
-| Planet centre | `(0, 0, -10000)` | `scenes/planet.tscn` instanced into `main.tscn` |
-| `AtmosphereRadius` | 7200 units (20% above surface, visual only) | `[Export]` on `Planet.cs` |
-| `SurfaceGravity` | 9.8 m/s² (Earth-like) | `[Export]` on `Planet.cs` |
-| `SoiName` | `"Kael"` (placeholder, for lore later) | `[Export]` on `Planet.cs` |
-
-Start state: ship at origin, planet centre 10,000 m ahead (ship forward is −Z), surface ≈ 4,000 m below, surface gravity pull ≈ 3.5 m/s² at spawn (clearly felt). Soi-telemetry threshold `PlanetRadius × 5` = 30,000 m from centre, so the ship starts **inside** Kael's SOI → `soi_body = "Kael"` at spawn.
-
-## GM derived, not hardcoded
-
-`public float GM => SurfaceGravity * PlanetRadius * PlanetRadius;` — `GM = 9.8 × 6000² = 352,800,000 m³/s²`. No raw gravitational constant anywhere. `PlayerShip` reads `_planet.GM` each physics frame.
-
-## Gravity applies in `_IntegrateForces` alongside collision
-
-Confirmed. `_IntegrateForces` (PlayerShip) keeps the batch-11 collision-impulse loop unchanged and appends the inverse-square gravity block after it:
-
-```csharp
-if (_planet != null)
-{
-    Vector3 toCenter = _planet.GlobalPosition - state.Transform.Origin;
-    float distSq = toCenter.LengthSquared();
-    if (distSq > 0.01f)
-    {
-        float accel = _planet.GM / distSq;
-        state.ApplyCentralForce(toCenter.Normalized() * accel * Mass);
-    }
-}
+**A planet in the current system (e.g. a K-system planet):**
+```
+coldorbit/output/ftl/target  {"type":"planet","system_id":"K","name":"<planet>","system_name":"Kerath","star_type":"<type>","distance_au":0.1,"spool_time_s":2}
+coldorbit/output/ftl/system  {"system_id":"K","star_name":"Kerath","star_type":"<type>","planets":[{"name":"..."}, ...]}
 ```
 
-- `GravityScale = 0f` line in `_Ready` **removed**. The scene node keeps `gravity_scale = 0.0` so Godot's built-in 9.8 m/s² "down" doesn't stack on the manual model.
-- `PlanetPath` is `[Export] NodePath`, wired in `main.tscn` as `../Planet`; `_planet` cached in `_Ready`.
-- Threading flag added (both in `Planet.cs` and the `_IntegrateForces` block): reads of `GM`/`GlobalPosition` are safe while the planet is a non-moving `StaticBody3D` and Godot's default single-threaded physics applies. If the planet ever becomes dynamic, or multithreaded physics is enabled, the `SurfaceGravity` write (admin) vs read (physics step) needs proper sync.
+(`distance_au` / `spool_time_s` shown to the rounding used in code —
+`distance_au` to 1 dp, spool to whole seconds. Exact numbers depend on the
+real chart coordinates; see distance note below.)
 
-## Dampener / gravity interaction (on paper)
+---
 
-In `HandleThrust`, when dampeners are on and there is no thrust input:
+## `ftl/state` destination field
 
-- **Near a planet:** only the lateral velocity (perpendicular to the gravity vector) is damped — the radial/falling component is untouched. **The ship falls correctly when idle with dampeners on**, instead of hovering against gravity. On paper: at spawn the pull is ≈3.5 m/s² (10,000 m from centre) and rises as the ship approaches the surface — clearly felt within a couple of seconds, and the fall continues with dampeners on.
-- **Open space:** unchanged — full velocity-proportional brake.
-- Angular dampening untouched (spin is always lateral). `gravity_scale = 0.0` is retained so the manual model is the only gravity.
+`PlayerShip` publishes the **real selected name** on `coldorbit/output/ftl/state`:
+`destination = ftl.Armed ? ftl.SelectedName : null`, and `range_au` is the real
+`FtlState.RangeAu`. No placeholder/index string remains. Other fields (armed,
+phase, progress, signal_lag_s, power) are untouched.
 
-## `soi_body` telemetry
+---
 
-`coldorbit/output/propulsion/state` now publishes the live value from `PlayerShip.GetSoiBody()` (stored on `PropulsionState.SoiBody`):
-- within `PlanetRadius × 5` (30,000 m) of centre → `"Kael"`
-- beyond → `"Deep Space"`
-- no planet → `"Deep Space"`
+## Distance model — deviation: real chart distances kept
 
-Label-only — gravity itself has **no SOI cutoff** (infinite inverse square), per the handover guardrail. The admin panel's old editable "SOI Body (override)" field is now a read-only live-mirror of this value.
+The handover suggested a **placeholder alphabetical-ring** distance model
+(`1.5 + ringDistance * 1.4`). The code instead computes **real straight-line AU
+from the actual star positions** in `drift_star_map_v2.svg`
+(`DriftData.DistanceAu`, using the per-system map coordinates). Planet targets
+add a small per-planet increment (`0.1 × (planetIndex + 1)` AU) on top of their
+star's distance, as the handover suggested for in-system jumps.
 
-## Altitude field confirmed
+I kept the real-coordinate model because the SVG positions were already
+available and give a more believable star map than the alphabetical ring. If
+you'd rather have the deterministic ring placeholder from the handover, it's a
+one-method swap in `FtlState.RangeAu` / `DriftData.DistanceAu`.
 
-- **Debug HUD** (`PlayerShip.UpdateDebugLabel`): added `Alt: XXXXX m` line. `AltitudeM = dist(centre) − PlanetRadius`, negative below the surface (crash state).
-- **MQTT telemetry**: `altitude_m` published in `coldorbit/output/propulsion/state` alongside `velocity_ms` (both via `PropulsionState.AltitudeM`, written every physics frame).
-- **Admin panel Propulsion tab**: read-only "Altitude" label live-mirrored from `SimBus.Propulsion.AltitudeM`, plus a new "── Planet ──" section:
-  - `SurfaceGravity m/s² (0–20)` slider → `SimBus.AdminSetPlanetGravity(float)` → applied on the main thread in `SimBus._Process` via a pending field (`_pendingPlanetGravity`), not written directly from the UI callback. This is the deferred-write pattern the handover asked for — no threading issue observed, and it's documented.
-  - `Planet Radius` read-only label (runtime radius change would need mesh/collider rebuilds — out of scope, per handover).
-  - `Distance to surface` read-only label, live-mirrors `AltitudeM`.
+---
 
-## Test obstacles — no conflict (confirmed, not assumed)
+## Untouched (per guardrails)
 
-`scenes/test_obstacles.tscn` walls/cubes are at Z = −150 to −200. Planet surface is at Z ≈ −4,000. Completely different depth ranges; no overlap, no changes made.
+FTL phase state machine (Idle/Charging/Ready/Jumping/Cooldown), actual jump
+travel/teleport, flight model, propulsion, hardpoints, and alerts were not
+modified. This batch is destination *selection* only.
 
-## Deviations and judgment calls
+---
 
-- **Mesh/collider sizes are authored in the .tscn, not driven by the exports.** `PlanetRadius`/`AtmosphereRadius` are `[Export]` (so they're discoverable/tuneable in the inspector and the source of truth for GM), but the `SphereMesh`/`SphereShape3D` radii are hardcoded to match the defaults (6000 / 7200). Changing them at runtime (or via the inspector alone) would desync visuals from physics — flagged as out of scope by the handover (Task 5) and left for a future "rebuild meshes on export change" pass.
-- **Camera far plane enlarged** to 100,000 (from Godot's default 4,000) on the chase camera in `main.tscn` — required for the 10 km-away planet to render at all. Not in the handover; without it the planet would be clipped.
-- **Atmosphere is a simple unshaded additive sphere** (low-alpha blue) — placeholder visual, no gameplay effect, as specified.
-- **Planet texture is procedurally baked at startup** in `Planet.cs` (FastNoiseLite sampled on the unit sphere → seamless continents; ocean depth gradient, forest/desert/rock/snow biomes, polar caps, clouds). Same pattern as `StarfieldSky` — no external assets. The scene's `SphereMesh`/`SphereShape3D` still carry the hardcoded radius (6000).
-- **Admin engine-temp override** (`PublishAdminOverridePropulsionTemp`) now carries live `altitude_m` and the live `SoiBody` so the ≤1-tick override payload stays consistent with the real state publish. PlayerShip overwrites it on the next telemetry tick regardless.
-- **`SoiBody` naming**: used `SoiBody` on `PropulsionState` (matches the codebase's PascalCase for bus fields; the MQTT key remains snake_case `soi_body`).
-- **Planet registers itself on SimBus** (`SimBus.Instance.Planet = this` in `Planet._Ready`) so the admin panel reaches it without a scene reference.
-
-## TODOs for future batches
-
-- Rebuild mesh/collider (and reposition) from `[Export]` values if runtime planet-radius tuning is ever wanted.
-- Atmosphere is visual-only: real atmospheric drag/entry effects are deliberately deferred.
-- Revisit `_IntegrateForces` gravity read path if the planet ever becomes dynamic or multithreaded physics is enabled.
-- Decide where the planet name ("Kael") lives once lore/star-system data exists; `SoiName` is currently a single `[Export]` string.
-
-## Environment confirmed
-
-Godot 4.7 / .NET 8 (`Godot.NET.Sdk/4.7.1`, `net8.0`). Build verified locally via `dotnet build` (0 errors; warnings are the established CS8632 set). MSTest discovery doesn't run in this headless environment (pre-existing; requires the Godot runtime) — the three existing tests only assert unchanged export defaults.
+Copy this back into the Cold Orbit project conversation on claude.ai.

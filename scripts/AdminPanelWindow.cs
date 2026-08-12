@@ -46,7 +46,7 @@ public partial class AdminPanelWindow : Window
     private CheckButton _ftlArmToggle;
     private OptionButton _ftlPhaseDropdown;
     private HSlider _ftlProgressSlider;
-    private LineEdit _ftlDestinationField;
+    private OptionButton _ftlDestinationDropdown;
     private HSlider _ftlRangeSlider;
     private HSlider _ftlSignalLagSlider;
     private SpinBox _ftlPowerField;
@@ -418,10 +418,24 @@ public partial class AdminPanelWindow : Window
         _ftlProgressSlider = MakeSlider(0, 1, 0);
         root.AddChild(Labeled("Progress (display-only)", _ftlProgressSlider));
 
-        _ftlDestinationField = new LineEdit { Editable = false, CustomMinimumSize = new Vector2(180, 0) };
-        root.AddChild(Labeled("Destination (display-only)", _ftlDestinationField));
+        // Flat destination picker over the whole Drift star map: all 26 stars
+        // in A–Z order, then every planet grouped by system. The physical panel
+        // only has prev/next, so this dropdown is the admin shortcut for
+        // jumping straight to any entry.
+        _ftlDestinationDropdown = MakeOptions(
+            DriftData.Destinations
+                .Select(d => d.IsStar ? d.Name : $"    {d.Name} ({DriftData.System(d.SystemId).StarName})")
+                .ToArray());
+        _ftlDestinationDropdown.ItemSelected += idx =>
+        {
+            if (_mirrorActive) return;
+            SimBus.Instance?.Ftl.SelectTo(DriftData.Destinations[(int)idx]);
+            SimBus.Instance?.PublishFtlSystem();
+            SimBus.Instance?.PublishFtlNavTarget();
+        };
+        root.AddChild(Labeled("Destination", _ftlDestinationDropdown));
 
-        _ftlRangeSlider = MakeSlider(0, 10, 0, 0.01);
+        _ftlRangeSlider = MakeSlider(0, 20, 0, 0.01);
         root.AddChild(Labeled("Range AU (display-only)", _ftlRangeSlider));
 
         _ftlSignalLagSlider = MakeSlider(0, 8, 0, 0.01);
@@ -1275,11 +1289,15 @@ public partial class AdminPanelWindow : Window
 
         _ftlProgressSlider.SetValueNoSignal(ftl.Progress);
 
-        string dest = ftl.Armed ? SimBus.FtlState.Destinations[ftl.DestinationIndex] : "";
-        if (_ftlDestinationField.Text != dest) _ftlDestinationField.Text = dest;
+        int destIdx = ftl.DestinationIndex;
+        if (_ftlDestinationDropdown.Selected != destIdx)
+        {
+            _mirrorActive = true;
+            _ftlDestinationDropdown.Select(destIdx);
+            _mirrorActive = false;
+        }
 
-        _ftlRangeSlider.SetValueNoSignal(
-            ftl.Armed ? SimBus.FtlState.DestinationRangesAu[ftl.DestinationIndex] : 0f);
+        _ftlRangeSlider.SetValueNoSignal(ftl.Armed ? ftl.RangeAu : 0f);
         _ftlSignalLagSlider.SetValueNoSignal(ftl.SignalLagS);
         _ftlPowerField.SetValueNoSignal(ftl.Phase == FtlPhase.Idle ? 0 : 340);
         _ftlAbortedToggle.SetPressedNoSignal(ftl.Aborted);

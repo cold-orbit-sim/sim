@@ -633,14 +633,11 @@ public partial class PlayerShip : RigidBody3D
     {
         var ftl = SimBus.Instance.Ftl;
 
-        // Destination string (null when not armed, per §3.1b).
-        string? destination = ftl.Armed
-            ? SimBus.FtlState.Destinations[ftl.DestinationIndex]
-            : null;
+        // Destination string (null when not armed, per §3.1b). Names and
+        // distances now come from the real Drift star map (batch 16).
+        string? destination = ftl.Armed ? ftl.SelectedName : null;
 
-        float rangeAu = ftl.Armed
-            ? SimBus.FtlState.DestinationRangesAu[ftl.DestinationIndex]
-            : 0f;
+        float rangeAu = ftl.Armed ? ftl.RangeAu : 0f;
 
         // power_kw: 0 at idle, nominal otherwise. No real power model yet.
         // power_max_kw: fixed placeholder (§3.1b batch 8).
