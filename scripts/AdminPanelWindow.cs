@@ -424,7 +424,7 @@ public partial class AdminPanelWindow : Window
         // jumping straight to any entry.
         _ftlDestinationDropdown = MakeOptions(
             DriftData.Destinations
-                .Select(d => d.IsStar ? d.Name : $"    {d.Name} ({DriftData.System(d.SystemId).StarName})")
+                .Select(d => d.IsStar ? d.Name : $"    {d.Name} ({DriftData.GetSystem(d.SystemId).StarName})")
                 .ToArray());
         _ftlDestinationDropdown.ItemSelected += idx =>
         {

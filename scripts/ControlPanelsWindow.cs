@@ -49,7 +49,7 @@ public partial class ControlPanelsWindow : Window
     private CheckButton _dampenerToggle;
 
     private static readonly string[] TouchscreenModeNames =
-        { "Engineering", "Propulsion", "FTL", "Turrets", "Missiles", "Comms", "Hardpoints" };
+        { "Engineering", "Propulsion", "FTL", "Map", "Turrets", "Missiles", "Comms", "Hardpoints" };
 
     private Button[] _touchscreenButtons;
     private ColorRect[] _touchscreenLeds;

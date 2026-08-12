@@ -56,7 +56,7 @@ public partial class SimBus : Node
 
     private static readonly HashSet<string> ValidTouchscreenModes = new()
     {
-        "engineering", "propulsion", "ftl", "turrets", "missiles", "comms", "hardpoints",
+        "engineering", "propulsion", "ftl", "map", "turrets", "missiles", "comms", "hardpoints",
     };
 
     public override void _Ready()
@@ -1095,12 +1095,12 @@ public partial class SimBus : Node
         public string CurrentSystemId { get; set; } = DefaultSystemId;
 
         // Spool-up model: charge seconds = Base + distanceAu * PerAu.
-        public float BaseChargeTime { get; set; } = 2f;
-        public float ChargeTimePerDistanceUnit { get; set; } = 0.5f;
+        public float BaseChargeTime { get; set; } = 7.8f;
+        public float ChargeTimePerDistanceUnit { get; set; } = 2.2f;
 
         public bool IsStarSelected => SelectedPlanetIndex < 0;
 
-        public DriftData.StarSystem SelectedSystem => DriftData.System(SelectedSystemId);
+        public DriftData.StarSystem SelectedSystem => DriftData.GetSystem(SelectedSystemId);
 
         // Display name for the current selection: star name, or planet name
         // when drilled into a planet.
@@ -1139,13 +1139,59 @@ public partial class SimBus : Node
         public int DestinationIndex
             => DriftData.DestinationIndexOf(SelectedSystemId, SelectedPlanetIndex);
 
-        // Move the selection by `direction` (+1 next, −1 prev) through the flat
-        // destination list, wrapping at both ends.
+        // Move the selection by `direction` (+1 next, −1 prev) through the nav
+        // cycle list, wrapping at both ends.
+        // Cycle list: all 26 stars A-Z, with planets of the current system
+        // inserted after their star. The current selection is skipped (you can't
+        // jump to where you already are). Admin flat-picker uses SelectTo instead.
         public void CycleDestination(int direction)
         {
-            var list = DriftData.Destinations;
-            int i = (DestinationIndex + direction + list.Length) % list.Length;
-            SelectTo(list[i]);
+            var list = BuildNavList();
+            int n = list.Length;
+            if (n == 0) return;
+
+            // Find the current selection in the list (included so we know our position).
+            int cur = -1;
+            for (int i = 0; i < n; i++)
+            {
+                if (list[i].SystemId == SelectedSystemId && list[i].PlanetIndex == SelectedPlanetIndex)
+                { cur = i; break; }
+            }
+            // Fallback: current selection not in list (e.g. admin set a planet in another system).
+            // Land on the current system's star as the position reference.
+            if (cur < 0)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    if (list[i].SystemId == SelectedSystemId && list[i].PlanetIndex < 0)
+                    { cur = i; break; }
+                }
+            }
+            if (cur < 0) cur = 0;
+
+            // Step, skipping the current selection itself.
+            int next = (cur + direction + n) % n;
+            while (list[next].SystemId == SelectedSystemId && list[next].PlanetIndex == SelectedPlanetIndex)
+                next = (next + direction + n) % n;
+
+            SelectTo(list[next]);
+        }
+
+        // Builds the nav cycle list: all 26 stars A-Z, with the planets of the
+        // ship's current system inserted immediately after their star.
+        private DriftData.Destination[] BuildNavList()
+        {
+            var result = new System.Collections.Generic.List<DriftData.Destination>();
+            foreach (var s in DriftData.Systems)
+            {
+                result.Add(new DriftData.Destination(s.Id, -1, s.StarName));
+                if (s.Id == CurrentSystemId)
+                {
+                    for (int p = 0; p < s.Planets.Length; p++)
+                        result.Add(new DriftData.Destination(s.Id, p, s.Planets[p].Name));
+                }
+            }
+            return result.ToArray();
         }
 
         // Point the selection at an explicit destination (used by the Admin

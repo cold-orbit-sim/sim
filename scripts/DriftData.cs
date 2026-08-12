@@ -47,7 +47,7 @@ public static class DriftData
 
     // Index lookup: 'A'=0, 'B'=1, ... 'Z'=25
     public static int SystemIndex(string id) => id[0] - 'A';
-    public static StarSystem System(string id) => Systems[SystemIndex(id)];
+    public static StarSystem GetSystem(string id) => Systems[SystemIndex(id)];
 
     // A single navigable destination: either a star (PlanetIndex == -1) or a
     // planet within a star's system. `Name` is the display string; `SystemId`
