@@ -183,6 +183,7 @@ public partial class PlayerShip : RigidBody3D
             ? (_planet.GlobalPosition - GlobalPosition).Length() - _planet.PlanetRadius
             : 0f;
 
+        HandleSpawnReset();
         HandleMix(dt);
         HandleThrust(dt);
         HandleStrafe();
@@ -196,6 +197,16 @@ public partial class PlayerShip : RigidBody3D
         PublishTelemetry(dt);
         PublishMqttState();          // immediate: alerts only
         PublishMqttTelemetry(dt);   // rate-limited: propulsion + FTL state
+    }
+
+    private void HandleSpawnReset()
+    {
+        if (!SimBus.Instance.Propulsion.PendingSpawnReset) return;
+        SimBus.Instance.Propulsion.PendingSpawnReset = false;
+        GlobalPosition  = Vector3.Zero;
+        LinearVelocity  = Vector3.Zero;
+        AngularVelocity = Vector3.Zero;
+        Basis           = Basis.Identity;
     }
 
     // Reads impulse data from _IntegrateForces (physics thread → main thread handoff)
@@ -285,9 +296,11 @@ public partial class PlayerShip : RigidBody3D
         if (Input.IsActionPressed("thrust_forward")) _thrustInput += 1f;
         if (Input.IsActionPressed("thrust_reverse")) { _thrustInput += 1f; _reverseEnabled = true; }
 
-        if (_thrustInput > 0f && !_propulsionOverheated)
+        var prop = SimBus.Instance.Propulsion;
+        bool overtempBlocked = _propulsionOverheated && !prop.AdminOvertempBypass;
+        if (_thrustInput > 0f && !overtempBlocked)
         {
-            float effectiveThrust = ThrustForce * (0.6f + 0.8f * _propellantMix);
+            float effectiveThrust = ThrustForce * prop.AdminThrustMultiplier * (0.6f + 0.8f * _propellantMix);
             float direction = _reverseEnabled ? -1f : 1f;
             Vector3 forward = -GlobalTransform.Basis.Z; // Godot forward is -Z
             ApplyCentralForce(forward * effectiveThrust * direction);

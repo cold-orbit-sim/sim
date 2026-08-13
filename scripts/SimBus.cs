@@ -32,6 +32,7 @@ public partial class SimBus : Node
     public FtlState Ftl { get; } = new();
     public TouchscreenState Touchscreen { get; } = new();
     public AlertsState Alerts { get; } = new();
+    public CameraState Cameras { get; } = new();
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
     // Set by Planet._Ready. Read by the admin panel (gravity override, planet
@@ -59,6 +60,11 @@ public partial class SimBus : Node
         "engineering", "propulsion", "ftl", "map", "turrets", "missiles", "comms", "hardpoints",
     };
 
+    private static readonly HashSet<string> ValidCameraViews = new()
+    {
+        "forward", "aft", "chase", "dorsal", "ventral", "docking", "damage",
+    };
+
     public override void _Ready()
     {
         Instance = this;
@@ -67,6 +73,7 @@ public partial class SimBus : Node
         // Register subscription and wire events before Start() so the
         // filters and callbacks are in place before the first connect fires.
         Mqtt.Subscribe("coldorbit/input/touchscreen/+");
+        Mqtt.Subscribe("coldorbit/input/cameras/+");
         Mqtt.Subscribe("coldorbit/input/comms/master_warn");
         Mqtt.Subscribe("coldorbit/input/comms/master_caut");
         Mqtt.Subscribe("coldorbit/input/alerts/acknowledge");
@@ -163,6 +170,20 @@ public partial class SimBus : Node
                 mode,
                 MqttQualityOfServiceLevel.AtLeastOnce,
                 retain: true);
+            return;
+        }
+
+        const string camerasPrefix = "coldorbit/input/cameras/";
+        if (topic.StartsWith(camerasPrefix, StringComparison.Ordinal))
+        {
+            if (state != 1) return;
+            var view = topic.Substring(camerasPrefix.Length);
+            if (!ValidCameraViews.Contains(view))
+            {
+                GD.PrintErr($"SimBus: unknown camera view '{view}' on topic {topic}");
+                return;
+            }
+            Cameras.PendingView = view;
             return;
         }
 
@@ -605,6 +626,7 @@ public partial class SimBus : Node
             MqttQualityOfServiceLevel.AtLeastOnce,
             retain: true);
 
+        PublishCameraState();
         PublishStartupStubs();
         // Publish real hardpoint module state (replaces stubs from batch 8).
         for (int slot = 1; slot <= 4; slot++)
@@ -616,6 +638,18 @@ public partial class SimBus : Node
         PublishFtlNavTargetNone();
         PublishFtlSystem();
         PublishFtlNavTarget();
+    }
+
+    // Publishes the active camera view as the retained value. Called on startup,
+    // on every view change (from CameraController.SwitchTo), and on broker
+    // reconnect so a subscriber always sees the current view immediately.
+    internal void PublishCameraState()
+    {
+        Mqtt.Publish(
+            "coldorbit/output/cameras/active",
+            Cameras.ActiveView,
+            MqttQualityOfServiceLevel.AtLeastOnce,
+            retain: true);
     }
 
     // Republishes the current alerts array after a broker reconnect, so
@@ -1023,6 +1057,10 @@ public partial class SimBus : Node
         public bool RcsEnabled { get; set; } = false;
         public float MixTarget { get; set; } = 0f; // 0 = Economy, 1 = Power
 
+        // --- Admin overrides (testing only, no MQTT publish) ---
+        public float AdminThrustMultiplier { get; set; } = 1.0f;
+        public bool AdminOvertempBypass { get; set; } = false;
+
         // --- Telemetry: written by PlayerShip each physics frame, read by control panels ---
         public float PropellantMix { get; private set; }
         public float EngineTemp { get; private set; }
@@ -1061,6 +1099,10 @@ public partial class SimBus : Node
         // Set by AdminTriggerCollisionAlert(); PlayerShip.HandleCollision picks it up
         // on the next physics frame so the alert fires through the normal path.
         public float PendingAdminCollisionN { get; set; } = 0f;
+
+        // Set by AdminResetToSpawn(); PlayerShip._PhysicsProcess teleports the
+        // ship to origin and zeroes all velocity on the next physics frame.
+        public bool PendingSpawnReset { get; set; } = false;
 
         public void PublishTelemetry(
             float propellantMix, float engineTemp, bool overheated, bool propulsionDisabled,
@@ -1246,6 +1288,17 @@ public partial class SimBus : Node
     {
         // §3.7 default: touchscreen shows Hardpoints status on startup.
         public string Mode { get; set; } = "hardpoints";
+    }
+
+    // Active camera view (batch 18). PendingView is written by the MQTT
+    // background thread and consumed by CameraController._Process on the main
+    // thread, matching the pending-field pattern used throughout the codebase.
+    // ActiveView is written by CameraController.SwitchTo (main thread only).
+    public sealed class CameraState
+    {
+        public string ActiveView { get; set; } = "forward";
+        // Volatile: written by MQTT background thread, read+cleared by CameraController._Process.
+        public volatile string? PendingView;
     }
 
     // Active alert list. Written by PlayerShip on state transitions, published
@@ -1459,6 +1512,11 @@ public partial class SimBus : Node
     public void AdminTriggerCollisionAlert()
     {
         Propulsion.PendingAdminCollisionN = 5001f; // just above default 5000 N threshold
+    }
+
+    public void AdminResetToSpawn()
+    {
+        Propulsion.PendingSpawnReset = true;
     }
 
     // Admin override for Planet.SurfaceGravity. Deferred to the Godot main

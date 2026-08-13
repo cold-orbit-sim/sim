@@ -32,6 +32,8 @@ public partial class AdminPanelWindow : Window
     private Label _propDampenerModeLabel;
     private CheckButton _propReverseToggle;
     private HSlider _propEngineTempSlider;
+    private HSlider _propThrustMultSlider;
+    private CheckButton _propOvertempBypassToggle;
     private Label _propVelocityLabel;
     private Label _propAltitudeLabel;
     private Label _propCollisionForceLabel;
@@ -57,6 +59,9 @@ public partial class AdminPanelWindow : Window
     private Label       _alertOverheatAckedLabel;
     private CheckButton _alertFtlAbortedToggle;
     private Label       _alertFtlAbortedAckedLabel;
+
+    // ── Cameras ───────────────────────────────────────────────────────────────
+    private OptionButton _cameraViewDropdown;
 
     // ── Ship / Global ─────────────────────────────────────────────────────────
     private CheckButton _loadoutUnlockedToggle;
@@ -226,7 +231,7 @@ public partial class AdminPanelWindow : Window
         AddTab(tabs, "Turrets",             BuildTurretsTab());
         AddTab(tabs, "Missiles",            BuildMissilesTab());
         AddTab(tabs, "Hardpoints",          BuildHardpointsTab());
-        AddTab(tabs, "Cameras",             BuildStubTab());
+        AddTab(tabs, "Cameras",             BuildCamerasTab());
         AddTab(tabs, "Touchscreen",         BuildStubTab());
         AddTab(tabs, "Generic Hardpoints",  BuildStubTab());
 
@@ -244,6 +249,7 @@ public partial class AdminPanelWindow : Window
         SyncFtlFromBus();
         SyncAlertsFromBus();
         SyncHardpointsFromBus();
+        SyncCamerasFromBus();
     }
 
     // ── Layout helpers ────────────────────────────────────────────────────────
@@ -305,6 +311,39 @@ public partial class AdminPanelWindow : Window
         return root;
     }
 
+    // ── Cameras tab ───────────────────────────────────────────────────────────
+
+    private static readonly string[] CameraViewKeys =
+        { "forward", "aft", "chase", "dorsal", "ventral", "docking", "damage" };
+
+    private Control BuildCamerasTab()
+    {
+        var root = new VBoxContainer();
+
+        _cameraViewDropdown = MakeOptions(new[] { "Forward", "Aft", "Chase", "Dorsal", "Ventral", "Docking", "Damage" });
+        _cameraViewDropdown.ItemSelected += idx =>
+        {
+            if (_mirrorActive) return;
+            if (SimBus.Instance != null)
+                SimBus.Instance.Cameras.PendingView = CameraViewKeys[(int)idx];
+        };
+        root.AddChild(Labeled("Active View", _cameraViewDropdown));
+
+        return root;
+    }
+
+    private void SyncCamerasFromBus()
+    {
+        if (_cameraViewDropdown == null) return;
+        string view = SimBus.Instance?.Cameras?.ActiveView ?? "forward";
+        int idx = System.Array.IndexOf(CameraViewKeys, view);
+        if (idx < 0) idx = 0;
+        if (_cameraViewDropdown.Selected == idx) return;
+        _mirrorActive = true;
+        _cameraViewDropdown.Select(idx);
+        _mirrorActive = false;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // ── Tab builders ──────────────────────────────────────────────────────────
 
@@ -325,6 +364,12 @@ public partial class AdminPanelWindow : Window
         callsignApply.Pressed += () =>
             SimBus.Instance?.PublishAdminOverrideShipCallsign(_callsignField.Text);
         root.AddChild(Labeled("Callsign", Row(_callsignField, callsignApply)));
+
+        root.AddChild(new HSeparator());
+
+        var resetBtn = new Button { Text = "Reset to spawn" };
+        resetBtn.Pressed += () => SimBus.Instance?.AdminResetToSpawn();
+        root.AddChild(resetBtn);
 
         return root;
     }
@@ -364,6 +409,16 @@ public partial class AdminPanelWindow : Window
         _propEngineTempSlider.ValueChanged += v =>
             SimBus.Instance?.PublishAdminOverridePropulsionTemp((float)v, SimBus.Instance.Propulsion.SoiBody);
         root.AddChild(Labeled("Engine Temp °C (override; ≤1 tick)", _propEngineTempSlider));
+
+        _propThrustMultSlider = MakeSlider(1, 50, 1, 1);
+        _propThrustMultSlider.ValueChanged += v =>
+            SimBus.Instance.Propulsion.AdminThrustMultiplier = (float)v;
+        root.AddChild(Labeled("Thrust multiplier ×1–50 (testing)", _propThrustMultSlider));
+
+        _propOvertempBypassToggle = new CheckButton { Text = "Bypass overtemp cutoff" };
+        _propOvertempBypassToggle.Toggled += pressed =>
+            SimBus.Instance.Propulsion.AdminOvertempBypass = pressed;
+        root.AddChild(_propOvertempBypassToggle);
 
         _propVelocityLabel = new Label { Text = "0.00 m/s" };
         root.AddChild(Labeled("Velocity (display-only)", _propVelocityLabel));

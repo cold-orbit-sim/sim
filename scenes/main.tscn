@@ -1,86 +1,147 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene format=3 uid="uid://bw7vp6xttvuj6"]
 
-[ext_resource type="Script" path="res://scripts/PlayerShip.cs" id="1"]
-[ext_resource type="Script" path="res://scripts/StarfieldSky.cs" id="2"]
-[ext_resource type="Script" path="res://scripts/DebrisField.cs" id="3"]
+[ext_resource type="Script" uid="uid://27tpexll2p1j" path="res://scripts/PlayerShip.cs" id="1"]
+[ext_resource type="Script" uid="uid://70k7l4o11x68" path="res://scripts/StarfieldSky.cs" id="2"]
+[ext_resource type="Script" uid="uid://c1yekfa0v8lqs" path="res://scripts/DebrisField.cs" id="3"]
 [ext_resource type="PackedScene" path="res://scenes/test_obstacles.tscn" id="4"]
 [ext_resource type="PackedScene" path="res://scenes/planet.tscn" id="5"]
+[ext_resource type="PackedScene" uid="uid://b8ki1aiijwa87" path="res://cruiser.glb" id="6"]
+[ext_resource type="Script" uid="uid://cnvutdh06islp" path="res://scripts/ShipMesh.cs" id="7"]
+[ext_resource type="Script" uid="uid://ck7110d13aijr" path="res://scripts/CameraController.cs" id="8"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
 background_color = Color(0.01, 0.01, 0.03, 1)
 ambient_light_source = 2
 ambient_light_color = Color(0.05, 0.05, 0.08, 1)
-ambient_light_energy = 1.0
 
-[sub_resource type="CapsuleMesh" id="CapsuleMesh_1"]
-radius = 1.0
-height = 4.0
+[sub_resource type="GDScript" id="GDScript_sun_flash"]
+script/source = "extends MeshInstance3D
+func _ready():
+	var light = get_parent().get_node(\"DirectionalLight3D\")
+	var planet = get_parent().get_node(\"Planet\")
+	var sun_dir = light.global_transform.basis.z.normalized()
+	global_position = planet.global_position + sun_dir * 80000.0
+"
 
-[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_1"]
-radius = 1.0
-height = 4.0
+[sub_resource type="SphereMesh" id="SphereMesh_sun"]
+radius = 3000.0
+height = 6000.0
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1"]
-albedo_color = Color(0.7, 0.75, 0.8, 1)
-metallic = 0.6
-roughness = 0.3
+[sub_resource type="StandardMaterial3D" id="Material_sun"]
+shading_mode = 2
+emission_enabled = true
+emission = Color(1.0, 0.78, 0.38, 1)
+emission_energy_multiplier = 10.0
+albedo_color = Color(1.0, 0.85, 0.5, 1)
 
-[node name="Main" type="Node3D"]
+[sub_resource type="BoxShape3D" id="BoxShape3D_1"]
+size = Vector3(18, 12, 65)
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="Main" type="Node3D" unique_id=911071826]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=113279447]
 environment = SubResource("Environment_1")
 script = ExtResource("2")
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-rotation_degrees = Vector3(-45, 30, 0)
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1543974825]
+transform = Transform3D(0.8660254, -0.35355338, 0.35355338, 0, 0.70710677, 0.70710677, -0.5, -0.6123724, 0.6123724, 0, 0, 0)
 light_energy = 1.2
 
-[node name="DebrisField" type="MultiMeshInstance3D" parent="."]
+[node name="Sun" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40000, 49000, -59000)
+mesh = SubResource("SphereMesh_sun")
+surface_material_override/0 = SubResource("Material_sun")
+script = SubResource("GDScript_sun_flash")
+
+[node name="DebrisField" type="Node3D" parent="." unique_id=1278224177]
 script = ExtResource("3")
+DebrisCount = 150
+MinDistance = 100.0
+MinScale = 3.0
+MaxScale = 10.0
+MaxDriftSpeed = 20.0
 
-[node name="TestObstacles" parent="." instance=ExtResource("4")]
+[node name="TestObstacles" parent="." unique_id=467132939 instance=ExtResource("4")]
 
-[node name="Planet" parent="." instance=ExtResource("5")]
-position = Vector3(0, 0, -10000)
+[node name="Planet" parent="." unique_id=1364046907 instance=ExtResource("5")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -10000)
 
-[node name="PlayerShip" type="RigidBody3D" parent="."]
+[node name="PlayerShip" type="RigidBody3D" parent="." unique_id=252590033]
 mass = 1000.0
 gravity_scale = 0.0
 can_sleep = false
 contact_monitor = true
 max_contacts_reported = 4
 script = ExtResource("1")
+TorqueForce = 150000.0
+AngularDampenerGain = 380.0
 DebugLabelPath = NodePath("../HUD/DebugLabel")
 HelpLabelPath = NodePath("../HUD/HelpLabel")
 PlanetPath = NodePath("../Planet")
 
-[node name="ShipMesh" type="MeshInstance3D" parent="PlayerShip"]
-rotation_degrees = Vector3(90, 0, 0)
-mesh = SubResource("CapsuleMesh_1")
-surface_material_override/0 = SubResource("StandardMaterial3D_1")
+[node name="ShipMesh" parent="PlayerShip" unique_id=1829824647 instance=ExtResource("6")]
+script = ExtResource("7")
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerShip"]
-rotation_degrees = Vector3(90, 0, 0)
-shape = SubResource("CapsuleShape3D_1")
+[node name="CollisionShape3D" type="CollisionShape3D" parent="PlayerShip" unique_id=388200302]
+shape = SubResource("BoxShape3D_1")
 
-[node name="ChaseCamera" type="Camera3D" parent="PlayerShip"]
-position = Vector3(0, 2, 8)
-rotation_degrees = Vector3(-10, 0, 0)
-current = true
+[node name="CameraForward" type="Camera3D" parent="PlayerShip" unique_id=399414180]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, -25)
+near = 0.1
 far = 100000.0
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="CameraAft" type="Camera3D" parent="PlayerShip" unique_id=1759526634]
+transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 2, 26)
+near = 0.1
+far = 100000.0
 
-[node name="DebugLabel" type="Label" parent="HUD"]
+[node name="CameraChase" type="Camera3D" parent="PlayerShip" unique_id=121110388]
+transform = Transform3D(1, 0, 0, 0, 0.9848077, 0.17364818, 0, -0.17364818, 0.9848077, 0, 15, 80)
+far = 100000.0
+
+[node name="CameraDorsal" type="Camera3D" parent="PlayerShip" unique_id=282257889]
+transform = Transform3D(1, 0, 0, 0, 0.34202015, 0.9396926, 0, -0.9396926, 0.34202015, 0, 50, 10)
+far = 100000.0
+
+[node name="CameraVentral" type="Camera3D" parent="PlayerShip" unique_id=575291567]
+transform = Transform3D(1, 0, 0, 0, 0.34202015, -0.9396926, 0, 0.9396926, 0.34202015, 0, -50, 10)
+far = 100000.0
+
+[node name="CameraDocking" type="Camera3D" parent="PlayerShip" unique_id=732268339]
+transform = Transform3D(1, 0, 0, 0, 0.8660254, -0.5, 0, 0.5, 0.8660254, 0, -8, 25)
+far = 100000.0
+
+[node name="CameraDamage" type="Camera3D" parent="PlayerShip" unique_id=31059663]
+transform = Transform3D(-4.371139e-08, 0.25881904, -0.9659258, 0, 0.9659258, 0.25881904, 1, 1.131334e-08, -4.222196e-08, 35, 10, 0)
+far = 100000.0
+
+[node name="CameraController" type="Node3D" parent="PlayerShip" unique_id=89033616]
+script = ExtResource("8")
+CameraForwardPath = NodePath("../CameraForward")
+CameraAftPath = NodePath("../CameraAft")
+CameraChasePath = NodePath("../CameraChase")
+CameraDorsalPath = NodePath("../CameraDorsal")
+CameraVentralPath = NodePath("../CameraVentral")
+CameraDockingPath = NodePath("../CameraDocking")
+CameraDamagePath = NodePath("../CameraDamage")
+
+[node name="HUD" type="CanvasLayer" parent="." unique_id=1994250287]
+
+[node name="DebugLabel" type="Label" parent="HUD" unique_id=1392075162]
 offset_left = 16.0
 offset_top = 16.0
 offset_right = 420.0
 offset_bottom = 220.0
 theme_override_font_sizes/font_size = 18
-text = "Velocity: 0.0 m/s\nDampeners: ON (X to toggle)\nRCS: OFF (V to toggle)\nMix: Economy (1=Economy, 2=Power)\nTemp: 0C\n? for controls"
+text = "Velocity: 0.0 m/s
+Dampeners: ON (X to toggle)
+RCS: OFF (V to toggle)
+Mix: Economy (1=Economy, 2=Power)
+Temp: 0C
+? for controls"
 
-[node name="HelpLabel" type="Label" parent="HUD"]
+[node name="HelpLabel" type="Label" parent="HUD" unique_id=1851906341]
 visible = false
 offset_left = 16.0
 offset_top = 232.0

@@ -42,120 +42,293 @@ public partial class Planet : StaticBody3D
         }
 
         ApplyEarthTexture();
+        AddCloudLayer();
     }
 
-    // Builds an Earth-like equirectangular texture and assigns it to the
-    // visual sphere. Only runs once at startup; the scene mesh size matches
-    // PlanetRadius regardless of texture.
+    private MeshInstance3D? _cloudMesh;
+
+    public override void _Process(double delta)
+    {
+        // Slow eastward drift — full revolution in ~50 minutes.
+        _cloudMesh?.RotateY((float)delta * 0.002f);
+    }
+
+    // Builds a multi-pass Earth-like texture and applies it to the visual sphere.
+    // Pass 1: domain-warped FBM heightmap → ocean/land/polar colours.
+    // Also derives a Sobel normal map from the heightmap for surface relief.
+    // Cloud layer is handled separately by AddCloudLayer (animated shader sphere).
+    // Only runs once at startup; scene mesh size matches PlanetRadius regardless.
     private void ApplyEarthTexture()
     {
         var mesh = GetNodeOrNull<MeshInstance3D>("MeshInstance3D");
         if (mesh == null) return;
 
+        float[] heights       = BuildHeightmap();
+        float[] detailHeights = BuildDetailHeights(heights);
+
         var material = new StandardMaterial3D
         {
-            AlbedoTexture = ImageTexture.CreateFromImage(BuildEarthTexture()),
-            Roughness = 0.9f,
+            AlbedoTexture  = ImageTexture.CreateFromImage(BuildAlbedoImage(heights)),
+            NormalEnabled  = true,
+            NormalTexture  = ImageTexture.CreateFromImage(BuildNormalImage(detailHeights)),
+            NormalScale    = 0.3f,
+            Roughness      = 0.6f,
+            Metallic       = 0.0f,
         };
         mesh.MaterialOverride = material;
     }
 
-    private static Image BuildEarthTexture()
+    private const int TexW = 1024;
+    private const int TexH = 512;
+
+    // Pass 1 — heightmap.
+    // Domain-warped FBM Simplex sampled on the unit sphere (seamless, no
+    // pole stretching). Fixed seed so Kael looks the same every session.
+    private static float[] BuildHeightmap()
     {
-        const int width = 2048;
-        const int height = 1024;
-        var image = Image.CreateEmpty(width, height, false, Image.Format.Rgb8);
+        var heights = new float[TexW * TexH];
 
-        var rng = new RandomNumberGenerator();
-        rng.Randomize();
-
-        // Continent layout: low-frequency 3D noise on the unit sphere so the
-        // map is seamless and has no pole/side stretching.
         var landNoise = new FastNoiseLite
         {
-            Seed = (int)rng.Randi(),
-            NoiseType = FastNoiseLite.NoiseTypeEnum.Perlin,
-            FractalType = FastNoiseLite.FractalTypeEnum.Fbm,
-            Frequency = 1.0f,
-            FractalOctaves = 6,
+            Seed                        = 31337,
+            NoiseType                   = FastNoiseLite.NoiseTypeEnum.SimplexSmooth,
+            FractalType                 = FastNoiseLite.FractalTypeEnum.Fbm,
+            Frequency                   = 0.7f,
+            FractalOctaves              = 5,
+            DomainWarpEnabled           = true,
+            DomainWarpType              = FastNoiseLite.DomainWarpTypeEnum.Simplex,
+            DomainWarpAmplitude         = 0.35f,
+            DomainWarpFrequency         = 0.3f,
+            DomainWarpFractalType       = FastNoiseLite.DomainWarpFractalTypeEnum.Progressive,
+            DomainWarpFractalOctaves    = 3,
         };
 
-        // Biome detail: mid-frequency noise for forest/desert/rock variation.
-        var terrainNoise = new FastNoiseLite
+        for (int y = 0; y < TexH; y++)
         {
-            Seed = (int)rng.Randi(),
-            NoiseType = FastNoiseLite.NoiseTypeEnum.Perlin,
-            FractalType = FastNoiseLite.FractalTypeEnum.Fbm,
-            Frequency = 3.0f,
-            FractalOctaves = 5,
-        };
-
-        // Cloud layer: banded high-frequency noise, brighter over the ocean.
-        var cloudNoise = new FastNoiseLite
-        {
-            Seed = (int)rng.Randi(),
-            NoiseType = FastNoiseLite.NoiseTypeEnum.Simplex,
-            FractalType = FastNoiseLite.FractalTypeEnum.Fbm,
-            Frequency = 1.8f,
-            FractalOctaves = 4,
-        };
-
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
+            for (int x = 0; x < TexW; x++)
             {
-                float u = (float)x / width;
-                float v = (float)y / height;
-                float lat = (0.5f - v) * Mathf.Pi;  // +π/2 at top (north) to −π/2 south
+                float u   = (float)x / TexW;
+                float v   = (float)y / TexH;
+                float lat = (0.5f - v) * Mathf.Pi;
                 float lon = (u - 0.5f) * Mathf.Tau;
 
                 float nx = Mathf.Cos(lat) * Mathf.Cos(lon);
                 float ny = Mathf.Sin(lat);
                 float nz = Mathf.Cos(lat) * Mathf.Sin(lon);
 
-                float e = landNoise.GetNoise3D(nx, ny, nz);     // −1..1, continents
-                float t = terrainNoise.GetNoise3D(nx, ny, nz);  // biome detail
-                float c = cloudNoise.GetNoise3D(nx, ny, nz);    // clouds
+                heights[y * TexW + x] = landNoise.GetNoise3D(nx, ny, nz);
+            }
+        }
+
+        return heights;
+    }
+
+    // High-frequency detail map for the normal pass only.
+    // The continent heightmap (freq 0.7) produces country-scale gradients that
+    // look like craters under lighting. This blends in a much higher-frequency
+    // noise so the Sobel picks up fine surface texture instead.
+    private static float[] BuildDetailHeights(float[] baseHeights)
+    {
+        var detail = new FastNoiseLite
+        {
+            Seed              = 77213,
+            NoiseType         = FastNoiseLite.NoiseTypeEnum.SimplexSmooth,
+            FractalType       = FastNoiseLite.FractalTypeEnum.Fbm,
+            Frequency         = 5.0f,
+            FractalOctaves    = 7,
+            FractalLacunarity = 2.0f,
+            FractalGain       = 0.5f,
+        };
+
+        var combined = new float[TexW * TexH];
+        for (int y = 0; y < TexH; y++)
+        {
+            for (int x = 0; x < TexW; x++)
+            {
+                float u   = (float)x / TexW;
+                float v   = (float)y / TexH;
+                float lat = (0.5f - v) * Mathf.Pi;
+                float lon = (u - 0.5f) * Mathf.Tau;
+
+                float nx = Mathf.Cos(lat) * Mathf.Cos(lon);
+                float ny = Mathf.Sin(lat);
+                float nz = Mathf.Cos(lat) * Mathf.Sin(lon);
+
+                int idx = y * TexW + x;
+                combined[idx] = baseHeights[idx] * 0.25f + detail.GetNoise3D(nx, ny, nz) * 0.75f;
+            }
+        }
+        return combined;
+    }
+
+    // Pass 2 — albedo (no clouds; the animated cloud sphere handles that).
+    private static Image BuildAlbedoImage(float[] heights)
+    {
+        var image = Image.CreateEmpty(TexW, TexH, false, Image.Format.Rgb8);
+
+        var oceanDeep  = new Color(0.039f, 0.165f, 0.290f);  // #0a2a4a
+        var oceanCoast = new Color(0.102f, 0.420f, 0.541f);  // #1a6b8a
+        var landLow    = new Color(0.227f, 0.420f, 0.165f);  // #3a6b2a
+        var landMid    = new Color(0.478f, 0.353f, 0.188f);  // #7a5a30
+        var landHigh   = new Color(0.541f, 0.478f, 0.416f);  // #8a7a6a
+        var landSnow   = new Color(0.910f, 0.910f, 0.910f);  // #e8e8e8
+        var iceColor   = new Color(0.930f, 0.950f, 0.990f);
+
+        for (int y = 0; y < TexH; y++)
+        {
+            for (int x = 0; x < TexW; x++)
+            {
+                float u = (float)x / TexW;
+                float v = (float)y / TexH;
+                float h = heights[y * TexW + x];
 
                 Color col;
-                if (e < 0f)
+                if (h < 0f)
                 {
-                    // Ocean: deeper → darker blue, lighter toward the coasts.
-                    float depth = Mathf.Clamp(-e, 0f, 1f);
-                    col = new Color(0.05f, 0.13f, 0.30f)
-                        .Lerp(new Color(0.13f, 0.32f, 0.52f), 1f - depth);
+                    float depth = Mathf.Clamp(-h, 0f, 1f);
+                    col = oceanCoast.Lerp(oceanDeep, depth);
                 }
                 else
                 {
-                    // Land: green base, tan desert bands, dark forest bands,
-                    // rock then snow on the highest terrain.
-                    float heightT = Mathf.Clamp(e, 0f, 1f);
-                    Color land = new Color(0.30f, 0.48f, 0.26f);
-                    float dry = Mathf.Clamp(t * 1.2f + 0.1f, 0f, 1f);
-                    land = land.Lerp(new Color(0.68f, 0.56f, 0.36f), dry * 0.8f);
-                    float forest = Mathf.Clamp(-t * 1.2f - 0.2f, 0f, 1f);
-                    land = land.Lerp(new Color(0.12f, 0.26f, 0.14f), forest * 0.6f);
-                    float rock = Mathf.Clamp((heightT - 0.72f) / 0.2f, 0f, 1f);
-                    land = land.Lerp(new Color(0.50f, 0.42f, 0.34f), rock);
-                    float snow = Mathf.Clamp((heightT - 0.92f) / 0.08f, 0f, 1f);
-                    land = land.Lerp(new Color(0.95f, 0.95f, 0.97f), snow);
+                    float e = Mathf.Clamp(h, 0f, 1f);
+                    Color land;
+                    if (e < 0.30f)
+                        land = landLow.Lerp(landMid, e / 0.30f);
+                    else if (e < 0.60f)
+                        land = landMid.Lerp(landHigh, (e - 0.30f) / 0.30f);
+                    else
+                        land = landHigh.Lerp(landSnow, (e - 0.60f) / 0.40f);
                     col = land;
                 }
 
-                // Polar ice caps beyond ~66° latitude, strongest at the poles.
-                float pole = Mathf.Abs(lat);
-                if (pole > 1.15f)
-                {
-                    float cap = Mathf.Clamp((pole - 1.15f) / (Mathf.Pi / 2f - 1.15f), 0f, 1f);
-                    col = col.Lerp(new Color(0.93f, 0.94f, 0.98f), cap);
-                }
+                // Polar caps: fade to ice within 15% of image top/bottom.
+                float poleFactor = 0f;
+                if (v < 0.15f)
+                    poleFactor = (0.15f - v) / 0.15f;
+                else if (v > 0.85f)
+                    poleFactor = (v - 0.85f) / 0.15f;
+                if (poleFactor > 0f)
+                    col = col.Lerp(iceColor, poleFactor);
 
-                // Clouds, slightly denser over the ocean.
-                float cloudMask = Mathf.Clamp((c - 0.10f) * 1.8f, 0f, 0.85f);
-                if (e < 0f) cloudMask = Mathf.Min(cloudMask + 0.10f, 0.9f);
-                col = col.Lerp(new Color(0.95f, 0.96f, 0.99f), cloudMask);
+                // Saturation boost — push chroma up ~25 %, leave hue/value alone.
+                col = Color.FromHsv(col.H, Mathf.Min(col.S * 1.25f, 1.0f), col.V);
 
                 image.SetPixel(x, y, col);
+            }
+        }
+
+        return image;
+    }
+
+    // Sobel normal map derived from the heightmap. Wraps horizontally,
+    // clamps vertically (matching equirectangular pole behaviour).
+    private static Image BuildNormalImage(float[] heights)
+    {
+        var image = Image.CreateEmpty(TexW, TexH, false, Image.Format.Rgb8);
+        const float sobelScale = 0.8f;
+
+        float SampleH(int px, int py)
+        {
+            int sx = (px + TexW) % TexW;
+            int sy = Mathf.Clamp(py, 0, TexH - 1);
+            return heights[sy * TexW + sx];
+        }
+
+        for (int y = 0; y < TexH; y++)
+        {
+            for (int x = 0; x < TexW; x++)
+            {
+                float gx =
+                    -SampleH(x-1, y-1) + SampleH(x+1, y-1) +
+                    -2f * SampleH(x-1, y) + 2f * SampleH(x+1, y) +
+                    -SampleH(x-1, y+1) + SampleH(x+1, y+1);
+
+                float gy =
+                    -SampleH(x-1, y-1) - 2f * SampleH(x, y-1) - SampleH(x+1, y-1) +
+                     SampleH(x-1, y+1) + 2f * SampleH(x, y+1) + SampleH(x+1, y+1);
+
+                var normal = new Vector3(-gx * sobelScale, -gy * sobelScale, 1f).Normalized();
+                var col    = new Color(
+                    normal.X * 0.5f + 0.5f,
+                    normal.Y * 0.5f + 0.5f,
+                    normal.Z * 0.5f + 0.5f
+                );
+                image.SetPixel(x, y, col);
+            }
+        }
+
+        return image;
+    }
+
+    // Adds a baked RGBA cloud texture on a slightly-larger sphere, rotated
+    // each frame for drift. StandardMaterial3D alpha transparency is reliable
+    // where a ShaderMaterial blend_mix was not.
+    private void AddCloudLayer()
+    {
+        float coverage = 0.10f + GD.Randf() * 0.10f;  // 0.10–0.20 each session
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoTexture   = ImageTexture.CreateFromImage(BuildCloudImage(coverage)),
+            Transparency    = BaseMaterial3D.TransparencyEnum.Alpha,
+            ShadingMode     = BaseMaterial3D.ShadingModeEnum.PerVertex,
+            DepthDrawMode   = BaseMaterial3D.DepthDrawModeEnum.Disabled,
+            CullMode        = BaseMaterial3D.CullModeEnum.Back,
+            Roughness       = 0.9f,
+            Metallic        = 0.0f,
+        };
+
+        var sphereMesh = new SphereMesh
+        {
+            Radius         = PlanetRadius * 1.020f,
+            Height         = PlanetRadius * 2.040f,
+            RadialSegments = 64,
+            Rings          = 32,
+        };
+
+        _cloudMesh = new MeshInstance3D { Mesh = sphereMesh, MaterialOverride = mat };
+        AddChild(_cloudMesh);
+    }
+
+    private static Image BuildCloudImage(float coverage)
+    {
+        var image = Image.CreateEmpty(TexW, TexH, false, Image.Format.Rgba8);
+
+        var cloudNoise = new FastNoiseLite
+        {
+            Seed           = 99421,
+            NoiseType      = FastNoiseLite.NoiseTypeEnum.Simplex,
+            FractalType    = FastNoiseLite.FractalTypeEnum.Fbm,
+            Frequency      = 2.8f,
+            FractalOctaves = 4,
+        };
+
+        // GetNoise3D FBM output clusters ~N(0.5, 0.2) after remap to 0..1.
+        // Threshold 0.65 → ~20 % of surface covered; 0.60 → ~30 %.
+        // coverage 0.10..0.20 maps onto that range linearly.
+        float threshold = 0.70f - coverage * 0.5f;
+
+        for (int y = 0; y < TexH; y++)
+        {
+            for (int x = 0; x < TexW; x++)
+            {
+                float u   = (float)x / TexW;
+                float v   = (float)y / TexH;
+                float lat = (0.5f - v) * Mathf.Pi;
+                float lon = (u - 0.5f) * Mathf.Tau;
+
+                float nx = Mathf.Cos(lat) * Mathf.Cos(lon);
+                float ny = Mathf.Sin(lat);
+                float nz = Mathf.Cos(lat) * Mathf.Sin(lon);
+
+                float c     = cloudNoise.GetNoise3D(nx, ny, nz) * 0.5f + 0.5f;  // 0..1
+                float alpha = Mathf.Clamp((c - threshold) / 0.08f, 0f, 1f) * 0.82f;
+
+                // Sparser toward poles.
+                float pole = Mathf.Abs(v - 0.5f) * 2.0f;
+                alpha *= 1.0f - pole * pole * pole;
+
+                image.SetPixel(x, y, new Color(0.96f, 0.97f, 1.0f, alpha));
             }
         }
 

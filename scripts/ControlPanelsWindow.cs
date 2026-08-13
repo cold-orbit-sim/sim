@@ -71,6 +71,16 @@ public partial class ControlPanelsWindow : Window
     private ColorRect _masterWarnLed;
     private ColorRect _masterCautLed;
 
+    // ── Camera panel state ────────────────────────────────────────────────
+    private static readonly string[] CameraViewKeys =
+        { "forward", "aft", "chase", "dorsal", "ventral", "docking", "damage" };
+    private static readonly string[] CameraViewLabels =
+        { "Forward", "Aft", "External / Chase", "Dorsal", "Ventral", "Docking", "Damage Inspection" };
+
+    private Button[] _cameraButtons;
+    private ColorRect[] _cameraLeds;
+    private string _lastCameraView;
+
     // ── Hardpoint panel state (one per slot) ──────────────────────────────
     private sealed class HardpointPanelState
     {
@@ -116,6 +126,7 @@ public partial class ControlPanelsWindow : Window
         SyncTouchscreenFromBus();
         SyncCommsFromBus();
         SyncHardpointsFromBus();
+        SyncCamerasFromBus();
     }
 
     // --- Layout helpers -----------------------------------------------
@@ -239,15 +250,39 @@ public partial class ControlPanelsWindow : Window
     {
         var root = new VBoxContainer();
         var group = new ButtonGroup();
-        string[] names = { "Forward", "Aft", "External / Chase", "Dorsal", "Ventral", "Docking", "Damage Inspection" };
-        foreach (var name in names)
+        _cameraButtons = new Button[CameraViewKeys.Length];
+        _cameraLeds = new ColorRect[CameraViewKeys.Length];
+
+        for (int i = 0; i < CameraViewKeys.Length; i++)
         {
+            var viewKey = CameraViewKeys[i];
+            var topic = $"coldorbit/input/cameras/{viewKey}";
+
             var led = MakeLed(LedOff);
-            var button = new Button { Text = name, ToggleMode = true, ButtonGroup = group };
-            button.Toggled += pressed => led.Color = pressed ? LedGreen : LedOff;
+            var button = new Button { Text = CameraViewLabels[i], ToggleMode = true, ButtonGroup = group };
+            button.ButtonDown += () => PublishButtonStateQos1(topic, 1);
+            button.ButtonUp += () => PublishButtonStateQos1(topic, 0);
+
+            _cameraButtons[i] = button;
+            _cameraLeds[i] = led;
             root.AddChild(Row(button, led));
         }
         return root;
+    }
+
+    private void SyncCamerasFromBus()
+    {
+        if (_cameraButtons == null) return;
+        string view = SimBus.Instance?.Cameras?.ActiveView ?? "forward";
+        if (view == _lastCameraView) return;
+        _lastCameraView = view;
+
+        for (int i = 0; i < CameraViewKeys.Length; i++)
+        {
+            bool active = CameraViewKeys[i] == view;
+            _cameraButtons[i].SetPressedNoSignal(active);
+            _cameraLeds[i].Color = active ? LedGreen : LedOff;
+        }
     }
 
     private Control BuildTouchscreenModeTab()

@@ -88,7 +88,12 @@ When you are Claude Code:
   explicitly in the handover-back. Do not silently resolve ambiguities.
 - Do not add scope. If you think something is missing, note it as a TODO
   for the next batch — don't build it unrequested.
-- Write `HANDOVER-BACK.md` at repo root before ending the session.
+- Write the handover-back as **markdown posted in chat**, not committed to
+  disk. Do not write or leave a `HANDOVER-BACK.md` file in the repo.
+- Before writing the handover-back, commit all changed files to git with a
+  short commit message that identifies the batch (e.g. `batch N: brief
+  description`), then push the branch upstream. The commit hash gives the
+  planning conversation a permanent reference to match against the handback.
 
 ---
 
@@ -264,8 +269,16 @@ something outside your repo, stop and say so. Don't reach across repos.
 
 ## How to hand back
 
-At the end of every Claude Code session, write `HANDOVER-BACK.md` at the
-repo root. It should cover:
+At the end of every Claude Code session:
+
+**Step 1 — commit and push.**
+Stage all changed files, commit with a message of the form `batch N: brief
+description` (or similar if there was no formal batch number), then push
+the branch upstream. The commit hash is the permanent link between the code
+and the handback document.
+
+**Step 2 — post the handover-back in chat** (do not write it to disk).
+It should cover:
 
 1. **What was built** — per task from the handover, what was done and how
 2. **Deviations** — anything that differs from the spec, and why
@@ -274,9 +287,11 @@ repo root. It should cover:
 4. **Open items / TODOs** — what wasn't finished, and what future batches
    need to address
 5. **Versions** — Godot, .NET SDK, MQTTnet, Mosquitto (if relevant)
+6. **Commit** — include the short commit hash so the planning conversation
+   can reference it
 
-End with the instruction: *"Tell the user to copy this file's contents
-into the Cold Orbit project conversation on claude.ai."*
+End with the instruction: *"Tell the user to copy this handback into the
+Cold Orbit project conversation on claude.ai."*
 
 The master plan document lives in the claude.ai Project's Knowledge Base,
 not in any repo. It is always out of scope for Claude Code to edit directly.
