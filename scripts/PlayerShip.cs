@@ -44,6 +44,9 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float CollisionFriction { get; set; } = 0.0f;   // PhysicsMaterial.friction (zero = no surface drag in space)
     [Export] public float CollisionAlertThresholdN { get; set; } = 5000f; // impulse above this raises HULL IMPACT alert
     [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
+    [Export] public float ScaleHeightM { get; set; } = 8000f;            // atmospheric scale height (m); density = exp(-alt/scale)
+    [Export] public float DragCoefficient { get; set; } = 0.0002f;       // drag = v² × coeff × density (N)
+    [Export] public float AtmoHeatRate { get; set; } = 0.15f;            // °C/s per (density × m/s)
     [Export] public NodePath DebugLabelPath { get; set; } = new NodePath();
     [Export] public NodePath HelpLabelPath { get; set; } = new NodePath();
     [Export] public NodePath PlanetPath { get; set; } = new NodePath();
@@ -83,6 +86,11 @@ public partial class PlayerShip : RigidBody3D
     private bool _alertFtlAbortActive = false;
     private bool _alertCollisionActive = false;
     private bool _mqttAlertsNeedPublish = true; // force publish on first connect
+
+    // Atmospheric density at the ship's current altitude, set in _IntegrateForces
+    // and read in HandleThrust (_PhysicsProcess) for heating. Volatile for
+    // future-proofing against multithreaded physics.
+    private volatile float _pendingAtmoDensity = 0f;
 
     // Collision impulse written from _IntegrateForces (physics step), read and
     // cleared in HandleCollision (_PhysicsProcess). Both run on the main thread
@@ -267,6 +275,25 @@ public partial class PlayerShip : RigidBody3D
                 float accel = _planet.GM / distSq;
                 state.ApplyCentralForce(toCenter.Normalized() * accel * Mass);
             }
+
+            // Atmospheric drag. Altitude clamped ≥ 0 so underground/surface
+            // doesn't produce an unphysical super-dense result.
+            float dist = toCenter.Length();
+            float altM = dist - _planet.PlanetRadius;
+            float density = Mathf.Exp(-Mathf.Max(0f, altM) / ScaleHeightM);
+            _pendingAtmoDensity = density;
+
+            Vector3 vel = state.LinearVelocity;
+            float speedSq = vel.LengthSquared();
+            if (speedSq > 0.01f && density > 1e-6f)
+            {
+                Vector3 drag = -vel.Normalized() * speedSq * DragCoefficient * density;
+                state.ApplyCentralForce(drag);
+            }
+        }
+        else
+        {
+            _pendingAtmoDensity = 0f;
         }
     }
 
@@ -335,6 +362,10 @@ public partial class PlayerShip : RigidBody3D
             ApplyCentralForce(-LinearVelocity * LinearDampenerGain * Mass);
             _dampenerMode = "station_keep";
         }
+
+        // Atmospheric friction heating: applies regardless of engine state.
+        // Uses density from _IntegrateForces this frame and current velocity.
+        _engineTemp += _pendingAtmoDensity * LinearVelocity.Length() * AtmoHeatRate * dt;
 
         // Passive radiative cooling always applies, even mid-burn, so heat
         // generation above is the net-of-cooling delta in practice.
@@ -623,6 +654,9 @@ public partial class PlayerShip : RigidBody3D
             dampeners_enabled = p.DampenersEnabled,
             dampener_mode = p.DampenerMode,
             reverse_enabled = p.ReverseEnabled,
+            // ship_temp_c: max of all engine temps. Currently all engines share
+            // one sensor, so this equals any single engine's reading.
+            ship_temp_c = tempC,
             engines = new object[]
             {
                 new { id = "port",      power_kw = (int)enginePowerEach, temp_c = tempC },

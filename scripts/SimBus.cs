@@ -1394,6 +1394,7 @@ public partial class SimBus : Node
             dampeners_enabled = p.DampenersEnabled,
             dampener_mode = p.DampenerMode,
             reverse_enabled = p.ReverseEnabled,
+            ship_temp_c = tempClamped,
             engines = new object[]
             {
                 new { id = "port",      power_kw = (int)enginePowerEach, temp_c = tempClamped },
