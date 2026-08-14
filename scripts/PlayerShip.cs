@@ -86,7 +86,12 @@ public partial class PlayerShip : RigidBody3D
     private bool _alertOverheatActive = false;
     private bool _alertFtlAbortActive = false;
     private bool _alertCollisionActive = false;
+    private bool _alertAtmoActive = false;
     private bool _mqttAlertsNeedPublish = true; // force publish on first connect
+
+    // True when the ship is below AtmosphereTopM. Set each _PhysicsProcess frame
+    // so HandleThrust and UpdateAlerts see a consistent value.
+    private bool _inAtmosphere = false;
 
     // Atmospheric density at the ship's current altitude, set in _IntegrateForces
     // and read in HandleThrust (_PhysicsProcess) for heating. Volatile for
@@ -191,6 +196,8 @@ public partial class PlayerShip : RigidBody3D
         _altitudeM = _planet != null
             ? (_planet.GlobalPosition - GlobalPosition).Length() - _planet.PlanetRadius
             : 0f;
+
+        _inAtmosphere = _planet != null && _altitudeM < AtmosphereTopM;
 
         HandleSpawnReset();
         HandleMix(dt);
@@ -325,6 +332,11 @@ public partial class PlayerShip : RigidBody3D
         if (Input.IsActionPressed("thrust_reverse")) { _thrustInput += 1f; _reverseEnabled = true; }
 
         var prop = SimBus.Instance.Propulsion;
+
+        // Dampeners cannot operate inside the atmosphere.
+        if (_inAtmosphere && prop.DampenersEnabled)
+            prop.DampenersEnabled = false;
+
         bool overtempBlocked = _propulsionOverheated && !prop.AdminOvertempBypass;
         if (_thrustInput > 0f && !overtempBlocked)
         {
@@ -443,10 +455,10 @@ public partial class PlayerShip : RigidBody3D
 
     private void HandleDampenerToggle()
     {
-        if (Input.IsActionJustPressed("toggle_dampeners"))
-        {
-            SimBus.Instance.Propulsion.DampenersEnabled = !SimBus.Instance.Propulsion.DampenersEnabled;
-        }
+        if (!Input.IsActionJustPressed("toggle_dampeners")) return;
+        // Cannot enable dampeners inside the atmosphere.
+        if (_inAtmosphere && !SimBus.Instance.Propulsion.DampenersEnabled) return;
+        SimBus.Instance.Propulsion.DampenersEnabled = !SimBus.Instance.Propulsion.DampenersEnabled;
     }
 
     private void HandleRcsToggle()
@@ -612,6 +624,29 @@ public partial class PlayerShip : RigidBody3D
         {
             alerts.Active.RemoveAll(a => a.Id == "alert_collision");
             _alertCollisionActive = false;
+            changed = true;
+        }
+
+        // Atmosphere entry — dampeners inoperable while below AtmosphereTopM.
+        // Restores dampeners automatically on exit.
+        bool wantAtmo = _inAtmosphere;
+        bool hasAtmo = _alertAtmoActive;
+        if (wantAtmo && !hasAtmo)
+        {
+            alerts.Active.Add(new SimBus.AlertEntry(
+                Id: "alert_atmo_dampeners_inop",
+                Severity: "warning",
+                System: "propulsion",
+                Message: "ATMOSPHERE DETECTED — DAMPENERS INOP",
+                TimestampS: (long)_missionTimeS));
+            _alertAtmoActive = true;
+            changed = true;
+        }
+        else if (!wantAtmo && hasAtmo)
+        {
+            alerts.Active.RemoveAll(a => a.Id == "alert_atmo_dampeners_inop");
+            _alertAtmoActive = false;
+            SimBus.Instance.Propulsion.DampenersEnabled = true;
             changed = true;
         }
 
