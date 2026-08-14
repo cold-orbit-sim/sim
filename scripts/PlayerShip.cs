@@ -197,7 +197,8 @@ public partial class PlayerShip : RigidBody3D
             ? (_planet.GlobalPosition - GlobalPosition).Length() - _planet.PlanetRadius
             : 0f;
 
-        _inAtmosphere = _planet != null && _altitudeM < AtmosphereTopM;
+        _inAtmosphere = (_planet != null && _altitudeM < AtmosphereTopM)
+                     || SimBus.Instance.Propulsion.AdminAtmoSimulated;
 
         HandleSpawnReset();
         HandleMix(dt);

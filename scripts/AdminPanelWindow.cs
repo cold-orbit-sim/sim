@@ -433,6 +433,10 @@ public partial class AdminPanelWindow : Window
         simCollisionBtn.Pressed += () => SimBus.Instance?.AdminTriggerCollisionAlert();
         root.AddChild(simCollisionBtn);
 
+        var simAtmoBtn = new CheckButton { Text = "Simulate atmosphere entry" };
+        simAtmoBtn.Toggled += pressed => SimBus.Instance?.AdminSimulateAtmosphere(pressed);
+        root.AddChild(simAtmoBtn);
+
         _propSoiLabel = new Label { Text = "Deep Space" };
         root.AddChild(Labeled("SOI Body (display-only)", _propSoiLabel));
 

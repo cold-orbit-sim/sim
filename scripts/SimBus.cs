@@ -1104,6 +1104,11 @@ public partial class SimBus : Node
         // ship to origin and zeroes all velocity on the next physics frame.
         public bool PendingSpawnReset { get; set; } = false;
 
+        // Set by AdminSimulateAtmosphere(); ORed into PlayerShip._inAtmosphere so
+        // the atmosphere alert and dampener lockout can be tested without flying
+        // to low altitude.
+        public bool AdminAtmoSimulated { get; set; } = false;
+
         public void PublishTelemetry(
             float propellantMix, float engineTemp, bool overheated, bool propulsionDisabled,
             float velocity, float accelerationMs2, float throttleInput, bool reverseEnabled,
@@ -1513,6 +1518,13 @@ public partial class SimBus : Node
     public void AdminTriggerCollisionAlert()
     {
         Propulsion.PendingAdminCollisionN = 5001f; // just above default 5000 N threshold
+    }
+
+    // Simulates atmosphere entry/exit for testing the dampener lockout and
+    // DAMPENERS INOP alert without flying to low altitude.
+    public void AdminSimulateAtmosphere(bool simulated)
+    {
+        Propulsion.AdminAtmoSimulated = simulated;
     }
 
     public void AdminResetToSpawn()
