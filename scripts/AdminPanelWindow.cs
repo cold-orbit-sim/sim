@@ -46,13 +46,11 @@ public partial class AdminPanelWindow : Window
 
     // ── FTL controls ──────────────────────────────────────────────────────────
     private CheckButton _ftlArmToggle;
-    private OptionButton _ftlPhaseDropdown;
     private HSlider _ftlProgressSlider;
     private OptionButton _ftlDestinationDropdown;
     private HSlider _ftlRangeSlider;
     private HSlider _ftlSignalLagSlider;
     private SpinBox _ftlPowerField;
-    private CheckButton _ftlAbortedToggle;
 
     // ── Alerts ────────────────────────────────────────────────────────────────
     private CheckButton _alertOverheatToggle;
@@ -470,14 +468,6 @@ public partial class AdminPanelWindow : Window
             SimBus.Instance.Ftl.Armed = pressed;
         root.AddChild(_ftlArmToggle);
 
-        _ftlPhaseDropdown = MakeOptions(new[] { "idle", "charging", "ready", "jumping", "cooldown" });
-        _ftlPhaseDropdown.ItemSelected += idx =>
-        {
-            if (_mirrorActive) return;
-            SimBus.Instance?.Ftl.AdminForcePhase((FtlPhase)(int)idx);
-        };
-        root.AddChild(Labeled("Phase (override; ≤1 frame)", _ftlPhaseDropdown));
-
         _ftlProgressSlider = MakeSlider(0, 1, 0);
         root.AddChild(Labeled("Progress (display-only)", _ftlProgressSlider));
 
@@ -506,11 +496,6 @@ public partial class AdminPanelWindow : Window
 
         _ftlPowerField = MakeSpinBox(0, 10000, 0);
         root.AddChild(Labeled("Power kW (display-only)", _ftlPowerField));
-
-        _ftlAbortedToggle = new CheckButton { Text = "Aborted (override; ≤1 frame)" };
-        _ftlAbortedToggle.Toggled += pressed =>
-            SimBus.Instance?.Ftl.AdminForceAborted(pressed);
-        root.AddChild(_ftlAbortedToggle);
 
         return root;
     }
@@ -1358,14 +1343,6 @@ public partial class AdminPanelWindow : Window
 
         _ftlArmToggle.SetPressedNoSignal(ftl.Armed);
 
-        int phaseIdx = (int)ftl.Phase;
-        if (_ftlPhaseDropdown.Selected != phaseIdx)
-        {
-            _mirrorActive = true;
-            _ftlPhaseDropdown.Select(phaseIdx);
-            _mirrorActive = false;
-        }
-
         _ftlProgressSlider.SetValueNoSignal(ftl.Progress);
 
         int destIdx = ftl.DestinationIndex;
@@ -1379,7 +1356,6 @@ public partial class AdminPanelWindow : Window
         _ftlRangeSlider.SetValueNoSignal(ftl.Armed ? ftl.RangeAu : 0f);
         _ftlSignalLagSlider.SetValueNoSignal(ftl.SignalLagS);
         _ftlPowerField.SetValueNoSignal(ftl.Phase == FtlPhase.Idle ? 0 : 340);
-        _ftlAbortedToggle.SetPressedNoSignal(ftl.Aborted);
     }
 
     private void SyncAlertsFromBus()

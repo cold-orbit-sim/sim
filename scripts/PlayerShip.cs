@@ -60,6 +60,7 @@ public partial class PlayerShip : RigidBody3D
     private float _thrustInput = 0f;         // 0-1, abs of current thrust axis
     private bool _reverseEnabled = false;    // true while reverse thrust key is held
     private float _previousVelocity = 0f;    // for acceleration derivation
+    private float _smoothedAcceleration = 0f;
     private FtlPhase _ftlPhase = FtlPhase.Idle;
     private float _ftlTimer = 0f;
     private bool _ftlAborted = false;
@@ -520,8 +521,11 @@ public partial class PlayerShip : RigidBody3D
     private void PublishTelemetry(float dt)
     {
         float velocity = LinearVelocity.Length();
-        float acceleration = dt > 0f ? (velocity - _previousVelocity) / dt : 0f;
+        float rawAccel = dt > 0f ? (velocity - _previousVelocity) / dt : 0f;
         _previousVelocity = velocity;
+        // Low-pass filter: α = 0.15 smooths jitter at low speed while still
+        // tracking real thrust changes within ~5 physics frames.
+        _smoothedAcceleration = Mathf.Lerp(_smoothedAcceleration, rawAccel, 0.15f);
 
         SimBus.Instance.Propulsion.PublishTelemetry(
             propellantMix: _propellantMix,
@@ -529,7 +533,7 @@ public partial class PlayerShip : RigidBody3D
             overheated: _propulsionOverheated,
             propulsionDisabled: _propulsionOverheated,
             velocity: velocity,
-            accelerationMs2: acceleration,
+            accelerationMs2: _smoothedAcceleration,
             throttleInput: _thrustInput,
             reverseEnabled: _reverseEnabled,
             altitudeM: _altitudeM,

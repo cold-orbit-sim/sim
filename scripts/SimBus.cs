@@ -1287,12 +1287,6 @@ public partial class SimBus : Node
             Aborted = aborted;
         }
 
-        // Admin-panel override paths — force internal state for testing.
-        // PlayerShip.HandleFtl overwrites Phase on every physics frame, so
-        // a forced phase holds for at most one frame unless the FTL timer is
-        // also overridden (which requires PlayerShip changes, out of scope).
-        internal void AdminForcePhase(FtlPhase phase) { Phase = phase; }
-        internal void AdminForceAborted(bool aborted) { Aborted = aborted; }
     }
 
     // Current touchscreen display mode. Written by OnMqttMessageReceived (MQTT
