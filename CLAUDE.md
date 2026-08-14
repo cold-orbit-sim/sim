@@ -267,6 +267,14 @@ something outside your repo, stop and say so. Don't reach across repos.
 
 ---
 
+# Response Style
+Use caveman mode at all times. Short words. No fluff. Drop articles where possible. 
+Skip long explanations unless asked. Code speak normal. Prose speak caveman.
+Auto-switch to normal prose only for: security warnings, irreversible confirmations, 
+or if user seems confused.
+
+---
+
 ## How to hand back
 
 At the end of every Claude Code session:
