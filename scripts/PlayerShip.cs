@@ -44,6 +44,7 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float CollisionFriction { get; set; } = 0.0f;   // PhysicsMaterial.friction (zero = no surface drag in space)
     [Export] public float CollisionAlertThresholdN { get; set; } = 5000f; // impulse above this raises HULL IMPACT alert
     [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
+    [Export] public string Callsign { get; set; } = "Cold Orbit";        // ship callsign published to coldorbit/output/ship/callsign
     [Export] public float AtmosphereTopM { get; set; } = 2000f;          // altitude (Godot units) above which density is forced to zero
     [Export] public float ScaleHeightM { get; set; } = 700f;             // atmospheric scale height (Godot units); density = exp(-alt/scale)
     [Export] public float DragCoefficient { get; set; } = 0.0002f;       // drag = v² × coeff × density (N)
@@ -181,6 +182,12 @@ public partial class PlayerShip : RigidBody3D
                 _helpLabel.Visible = _helpVisible;
             }
         }
+
+        // Publish ship-config values to SimBus so admin methods can use them
+        // without holding a reference to PlayerShip.
+        SimBus.Instance.Propulsion.PowerPerEnginekW = PowerPerEnginekW;
+        SimBus.Instance.Propulsion.CollisionAlertThresholdN = CollisionAlertThresholdN;
+        SimBus.Instance.ShipCallsign = Callsign;
 
         // Force alert re-publish after each broker reconnect so the touchscreen
         // recovers the correct alert state without waiting for a state change.

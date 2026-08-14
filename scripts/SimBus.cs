@@ -35,6 +35,10 @@ public partial class SimBus : Node
     public CameraState Cameras { get; } = new();
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
+    // Set by PlayerShip._Ready from its [Export]. Published retained on every
+    // broker connect so reconnecting displays always see the current callsign.
+    public string ShipCallsign { get; set; } = "Cold Orbit";
+
     // Set by Planet._Ready. Read by the admin panel (gravity override, planet
     // constants) and PlayerShip (via its own cached reference). Main-thread only.
     public Planet? Planet { get; set; }
@@ -626,6 +630,7 @@ public partial class SimBus : Node
             MqttQualityOfServiceLevel.AtLeastOnce,
             retain: true);
 
+        PublishAdminOverrideShipCallsign(ShipCallsign);
         PublishCameraState();
         PublishStartupStubs();
         // Publish real hardpoint module state (replaces stubs from batch 8).
@@ -1100,6 +1105,11 @@ public partial class SimBus : Node
         // on the next physics frame so the alert fires through the normal path.
         public float PendingAdminCollisionN { get; set; } = 0f;
 
+        // Set by PlayerShip._Ready from its [Export]. Used by admin override
+        // methods that need ship-config values without a PlayerShip reference.
+        public float PowerPerEnginekW { get; set; } = 1500f;
+        public float CollisionAlertThresholdN { get; set; } = 5000f;
+
         // Set by AdminResetToSpawn(); PlayerShip._PhysicsProcess teleports the
         // ship to origin and zeroes all velocity on the next physics frame.
         public bool PendingSpawnReset { get; set; } = false;
@@ -1376,19 +1386,19 @@ public partial class SimBus : Node
 
     public void PublishAdminOverrideShipCallsign(string callsign)
     {
+        ShipCallsign = callsign;
         Mqtt.Publish("coldorbit/output/ship/callsign", callsign,
             MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 
     // ADMIN OVERRIDE — publishes a modified propulsion-state payload with the
     // given engine temperature and SOI body. PowerPerEnginekW (1500f) is
-    // duplicated from PlayerShip; no shared constant exists yet.
     // PlayerShip.PublishMqttTelemetry overwrites this on the next telemetry
     // tick (≤100 ms at TelemetryPublishRateHz = 10).
     public void PublishAdminOverridePropulsionTemp(float tempC, string soiBody)
     {
         var p = Propulsion;
-        float enginePowerEach = p.ThrottleInput * 1500f;
+        float enginePowerEach = p.ThrottleInput * p.PowerPerEnginekW;
         int tempClamped = (int)Mathf.Clamp(tempC, 0f, 1000f);
         string payload = JsonSerializer.Serialize(new
         {
@@ -1517,7 +1527,7 @@ public partial class SimBus : Node
     // same code path as a real impact (3 s duration, MQTT publish, etc.).
     public void AdminTriggerCollisionAlert()
     {
-        Propulsion.PendingAdminCollisionN = 5001f; // just above default 5000 N threshold
+        Propulsion.PendingAdminCollisionN = Propulsion.CollisionAlertThresholdN + 1f;
     }
 
     // Simulates atmosphere entry/exit for testing the dampener lockout and
