@@ -61,6 +61,8 @@ public partial class AdminPanelWindow : Window
     private Label       _alertFtlAbortedAckedLabel;
     private CheckButton _alertAtmoDampenersToggle;
     private Label       _alertAtmoDampenersAckedLabel;
+    private CheckButton _alertCollisionToggle;
+    private Label       _alertCollisionAckedLabel;
 
     // ── Cameras ───────────────────────────────────────────────────────────────
     private OptionButton _cameraViewDropdown;
@@ -532,6 +534,14 @@ public partial class AdminPanelWindow : Window
         var ackFtlBtn = new Button { Text = "Acknowledge" };
         ackFtlBtn.Pressed += () => AcknowledgeAlert("alert_ftl_aborted");
         root.AddChild(Row(_alertFtlAbortedToggle, _alertFtlAbortedAckedLabel, ackFtlBtn));
+
+        _alertCollisionToggle = new CheckButton { Text = "HULL IMPACT" };
+        _alertCollisionToggle.Toggled += pressed =>
+            ToggleAlert("alert_collision", "caution", "hull", "HULL IMPACT", pressed);
+        _alertCollisionAckedLabel = new Label { Text = "" };
+        var ackCollisionBtn = new Button { Text = "Acknowledge" };
+        ackCollisionBtn.Pressed += () => AcknowledgeAlert("alert_collision");
+        root.AddChild(Row(_alertCollisionToggle, _alertCollisionAckedLabel, ackCollisionBtn));
 
         _alertAtmoDampenersToggle = new CheckButton { Text = "ATMOSPHERE DETECTED — DAMPENERS INOP" };
         _alertAtmoDampenersToggle.Toggled += pressed =>
@@ -1388,6 +1398,10 @@ public partial class AdminPanelWindow : Window
         var atmo = alerts.Active.FirstOrDefault(a => a.Id == "alert_atmo_dampeners_inop");
         _alertAtmoDampenersToggle.SetPressedNoSignal(atmo != null);
         _alertAtmoDampenersAckedLabel.Text = atmo?.Acknowledged == true ? "(acked)" : "";
+
+        var collision = alerts.Active.FirstOrDefault(a => a.Id == "alert_collision");
+        _alertCollisionToggle.SetPressedNoSignal(collision != null);
+        _alertCollisionAckedLabel.Text = collision?.Acknowledged == true ? "(acked)" : "";
     }
 
     private void SyncHardpointsFromBus()
