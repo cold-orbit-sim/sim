@@ -59,6 +59,8 @@ public partial class AdminPanelWindow : Window
     private Label       _alertOverheatAckedLabel;
     private CheckButton _alertFtlAbortedToggle;
     private Label       _alertFtlAbortedAckedLabel;
+    private CheckButton _alertAtmoDampenersToggle;
+    private Label       _alertAtmoDampenersAckedLabel;
 
     // ── Cameras ───────────────────────────────────────────────────────────────
     private OptionButton _cameraViewDropdown;
@@ -530,6 +532,14 @@ public partial class AdminPanelWindow : Window
         var ackFtlBtn = new Button { Text = "Acknowledge" };
         ackFtlBtn.Pressed += () => AcknowledgeAlert("alert_ftl_aborted");
         root.AddChild(Row(_alertFtlAbortedToggle, _alertFtlAbortedAckedLabel, ackFtlBtn));
+
+        _alertAtmoDampenersToggle = new CheckButton { Text = "ATMOSPHERE DETECTED — DAMPENERS INOP" };
+        _alertAtmoDampenersToggle.Toggled += pressed =>
+            ToggleAlert("alert_atmo_dampeners_inop", "caution", "propulsion", "ATMOSPHERE DETECTED — DAMPENERS INOP", pressed);
+        _alertAtmoDampenersAckedLabel = new Label { Text = "" };
+        var ackAtmoBtn = new Button { Text = "Acknowledge" };
+        ackAtmoBtn.Pressed += () => AcknowledgeAlert("alert_atmo_dampeners_inop");
+        root.AddChild(Row(_alertAtmoDampenersToggle, _alertAtmoDampenersAckedLabel, ackAtmoBtn));
 
         root.AddChild(new HSeparator());
         root.AddChild(new Label { Text = "─ new alerts appear here as systems get wired ─" });
@@ -1374,6 +1384,10 @@ public partial class AdminPanelWindow : Window
         var ftlAbort = alerts.Active.FirstOrDefault(a => a.Id == "alert_ftl_aborted");
         _alertFtlAbortedToggle.SetPressedNoSignal(ftlAbort != null);
         _alertFtlAbortedAckedLabel.Text = ftlAbort?.Acknowledged == true ? "(acked)" : "";
+
+        var atmo = alerts.Active.FirstOrDefault(a => a.Id == "alert_atmo_dampeners_inop");
+        _alertAtmoDampenersToggle.SetPressedNoSignal(atmo != null);
+        _alertAtmoDampenersAckedLabel.Text = atmo?.Acknowledged == true ? "(acked)" : "";
     }
 
     private void SyncHardpointsFromBus()
