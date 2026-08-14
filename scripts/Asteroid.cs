@@ -127,7 +127,7 @@ public partial class Asteroid : StaticBody3D
             var p0 = displaced[a];
             var p1 = displaced[b];
             var p2 = displaced[c];
-            var n  = (p1 - p0).Cross(p2 - p0).Normalized();
+            var n  = (p2 - p0).Cross(p1 - p0).Normalized();
 
             int idx = i * 3;
             positions[idx]     = p0; normals[idx]     = n;
