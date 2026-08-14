@@ -44,6 +44,7 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float CollisionFriction { get; set; } = 0.0f;   // PhysicsMaterial.friction (zero = no surface drag in space)
     [Export] public float CollisionAlertThresholdN { get; set; } = 5000f; // impulse above this raises HULL IMPACT alert
     [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
+    [Export] public float AtmosphereTopM { get; set; } = 2000f;          // altitude (Godot units) above which density is forced to zero
     [Export] public float ScaleHeightM { get; set; } = 700f;             // atmospheric scale height (Godot units); density = exp(-alt/scale)
     [Export] public float DragCoefficient { get; set; } = 0.0002f;       // drag = v² × coeff × density (N)
     [Export] public float AtmoHeatRate { get; set; } = 15f;              // °C/s per (density × m/s)
@@ -276,11 +277,11 @@ public partial class PlayerShip : RigidBody3D
                 state.ApplyCentralForce(toCenter.Normalized() * accel * Mass);
             }
 
-            // Atmospheric drag. Altitude clamped ≥ 0 so underground/surface
-            // doesn't produce an unphysical super-dense result.
+            // Atmospheric drag. Zero above AtmosphereTopM; exponential below it.
             float dist = toCenter.Length();
             float altM = dist - _planet.PlanetRadius;
-            float density = Mathf.Exp(-Mathf.Max(0f, altM) / ScaleHeightM);
+            float density = altM >= AtmosphereTopM ? 0f
+                : Mathf.Exp(-Mathf.Max(0f, altM) / ScaleHeightM);
             _pendingAtmoDensity = density;
 
             Vector3 vel = state.LinearVelocity;
