@@ -635,7 +635,7 @@ public partial class PlayerShip : RigidBody3D
         {
             alerts.Active.Add(new SimBus.AlertEntry(
                 Id: "alert_atmo_dampeners_inop",
-                Severity: "warning",
+                Severity: "caution",
                 System: "propulsion",
                 Message: "ATMOSPHERE DETECTED — DAMPENERS INOP",
                 TimestampS: (long)_missionTimeS));
