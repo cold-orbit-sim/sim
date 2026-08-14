@@ -44,9 +44,9 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float CollisionFriction { get; set; } = 0.0f;   // PhysicsMaterial.friction (zero = no surface drag in space)
     [Export] public float CollisionAlertThresholdN { get; set; } = 5000f; // impulse above this raises HULL IMPACT alert
     [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
-    [Export] public float ScaleHeightM { get; set; } = 8000f;            // atmospheric scale height (m); density = exp(-alt/scale)
+    [Export] public float ScaleHeightM { get; set; } = 300f;             // atmospheric scale height (Godot units); density = exp(-alt/scale)
     [Export] public float DragCoefficient { get; set; } = 0.0002f;       // drag = v² × coeff × density (N)
-    [Export] public float AtmoHeatRate { get; set; } = 0.15f;            // °C/s per (density × m/s)
+    [Export] public float AtmoHeatRate { get; set; } = 0.5f;             // °C/s per (density × m/s)
     [Export] public NodePath DebugLabelPath { get; set; } = new NodePath();
     [Export] public NodePath HelpLabelPath { get; set; } = new NodePath();
     [Export] public NodePath PlanetPath { get; set; } = new NodePath();
