@@ -48,7 +48,7 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float DamageScaleN { get; set; } = 50000f;           // 50 kN impulse = 1 HP of damage
     [Export] public float ZoneThreshold { get; set; } = 0.5f;            // dot-product threshold for front/rear vs side hit zones
     [Export] public float ReactorOutputKW { get; set; } = 3000f;         // nominal reactor output for repair headroom calculation
-    [Export] public float RepairKWPerHPPerSecond { get; set; } = 50f;    // kW of headroom needed per HP/s of repair rate
+    [Export] public float RepairKWPerHPPerSecond { get; set; } = 270f;   // kW of headroom needed per HP/s of repair rate
     [Export] public float AtmosphereTopM { get; set; } = 2000f;          // altitude (Godot units) above which density is forced to zero
     [Export] public float ScaleHeightM { get; set; } = 700f;             // atmospheric scale height (Godot units); density = exp(-alt/scale)
     [Export] public float DragCoefficient { get; set; } = 0.0002f;       // drag = v² × coeff × density (N)
