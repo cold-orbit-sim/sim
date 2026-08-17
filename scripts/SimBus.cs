@@ -70,9 +70,13 @@ public partial class SimBus : Node
         "forward", "aft", "chase", "dorsal", "ventral", "docking", "damage",
     };
 
+    // Godot user:// path for persisting sim preferences across restarts.
+    private const string PrefsPath = "user://sim_prefs.cfg";
+
     public override void _Ready()
     {
         Instance = this;
+        Touchscreen.Mode = LoadTouchscreenMode();
         Mqtt = new MqttTelemetryPublisher(MqttBrokerHost, MqttBrokerPort);
 
         // Register subscription and wire events before Start() so the
@@ -170,6 +174,7 @@ public partial class SimBus : Node
                 return;
             }
             Touchscreen.Mode = mode;
+            SaveTouchscreenMode(mode);
             Mqtt.Publish(
                 "coldorbit/output/touchscreen/mode",
                 mode,
@@ -1539,6 +1544,27 @@ public partial class SimBus : Node
     // thread (_Process) because SurfaceGravity is read on the physics step
     // (PlayerShip._IntegrateForces via GM) and Planet is a scene node — the
     // admin panel shouldn't write it directly from its UI callback.
+    // ── Touchscreen mode persistence ──────────────────────────────────────────
+
+    private string LoadTouchscreenMode()
+    {
+        var cfg = new Godot.ConfigFile();
+        if (cfg.Load(PrefsPath) == Godot.Error.Ok)
+        {
+            string mode = cfg.GetValue("touchscreen", "mode", "hardpoints").AsString();
+            return ValidTouchscreenModes.Contains(mode) ? mode : "hardpoints";
+        }
+        return "hardpoints";
+    }
+
+    private void SaveTouchscreenMode(string mode)
+    {
+        var cfg = new Godot.ConfigFile();
+        cfg.Load(PrefsPath); // merge with existing keys
+        cfg.SetValue("touchscreen", "mode", mode);
+        cfg.Save(PrefsPath);
+    }
+
     public void AdminSetPlanetGravity(float surfaceGravity)
     {
         _pendingPlanetGravity = surfaceGravity;
