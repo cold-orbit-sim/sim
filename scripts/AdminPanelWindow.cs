@@ -83,21 +83,8 @@ public partial class AdminPanelWindow : Window
     }
     private readonly List<EngSysState> _engSystems = new();
 
-    // ── Repair queue — stub local state ───────────────────────────────────────
-    // Ordered list of subsystems awaiting repair. Publishes the
-    // coldorbit/output/repair/queue contract; no sim logic yet.
-    private sealed class RepairQueueEntry
-    {
-        public string System;   // weapons|engines|ftl|reactor|utility_1..4|hull
-        public string Status;   // queued|in_progress|blocked
-        public int RepairEtaS;  // 0 → null
-        public int Health;      // 0..100, current health % for context
-    }
-    private readonly List<RepairQueueEntry> _repairQueue = new();
+    // ── Repair queue ──────────────────────────────────────────────────────────
     private OptionButton _repairSystemOpt;
-    private OptionButton _repairStatusOpt;
-    private SpinBox _repairEtaBox;
-    private SpinBox _repairHealthBox;
     private ItemList _repairItemList;
 
     // ── Comms — stub local state ──────────────────────────────────────────────
@@ -252,6 +239,7 @@ public partial class AdminPanelWindow : Window
         SyncAlertsFromBus();
         SyncHardpointsFromBus();
         SyncCamerasFromBus();
+        SyncRepairQueueFromBus();
     }
 
     // ── Layout helpers ────────────────────────────────────────────────────────
@@ -634,31 +622,21 @@ public partial class AdminPanelWindow : Window
     {
         var root = new VBoxContainer();
 
-        root.AddChild(new Label { Text = "── Repair Queue (stub) ──" });
+        root.AddChild(new Label { Text = "── Repair Queue ──" });
+        root.AddChild(new Label { Text = "Queue is populated automatically when subsystems take damage.\nUse the buttons below to reorder or remove entries." });
 
         _repairSystemOpt = MakeOptions(new[]
         {
             "weapons", "engines", "ftl", "reactor",
             "utility_1", "utility_2", "utility_3", "utility_4", "hull",
         }, 1);
-        root.AddChild(Labeled("System", _repairSystemOpt));
-
-        _repairStatusOpt = MakeOptions(new[] { "queued", "in_progress", "blocked" });
-        root.AddChild(Labeled("Status", _repairStatusOpt));
-
-        _repairEtaBox = MakeSpinBox(0, 9999, 120);
-        root.AddChild(Labeled("Repair ETA s (0 = null)", _repairEtaBox));
-
-        _repairHealthBox = MakeSpinBox(0, 100, 50);
-        root.AddChild(Labeled("Health %", _repairHealthBox));
-
-        var enqueueBtn = new Button { Text = "Enqueue / Update" };
+        var enqueueBtn = new Button { Text = "Add to Queue" };
         enqueueBtn.Pressed += OnRepairEnqueue;
-        root.AddChild(enqueueBtn);
+        root.AddChild(Row(_repairSystemOpt, enqueueBtn));
 
         root.AddChild(new HSeparator());
 
-        _repairItemList = new ItemList { CustomMinimumSize = new Vector2(420, 180) };
+        _repairItemList = new ItemList { CustomMinimumSize = new Vector2(420, 200) };
         root.AddChild(_repairItemList);
 
         var removeBtn = new Button { Text = "Remove Selected" };
@@ -669,81 +647,68 @@ public partial class AdminPanelWindow : Window
         downBtn.Pressed += () => OnRepairMove(1);
         root.AddChild(Row(removeBtn, upBtn, downBtn));
 
-        // Seed the stub with the same mock the SimBus startup stub publishes.
-        if (_repairQueue.Count == 0)
-        {
-            _repairQueue.Add(new RepairQueueEntry { System = "engines", Status = "in_progress", RepairEtaS = 180, Health = 35 });
-            _repairQueue.Add(new RepairQueueEntry { System = "ftl",     Status = "queued",       RepairEtaS = 60,  Health = 70 });
-        }
-        RefreshRepairItemList();
-
+        SyncRepairQueueFromBus();
         return root;
     }
 
+    // Add a system to the real repair queue (no-op if already queued).
     private void OnRepairEnqueue()
     {
-        string system = _repairSystemOpt.GetItemText(_repairSystemOpt.Selected);
-        string status = _repairStatusOpt.GetItemText(_repairStatusOpt.Selected);
-        int eta = (int)_repairEtaBox.Value;
-        int health = (int)_repairHealthBox.Value;
-        var existing = _repairQueue.Find(e => e.System == system);
-        if (existing != null)
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
+        string sysId = _repairSystemOpt.GetItemText(_repairSystemOpt.Selected);
+        if (!eng.RepairQueue.Contains(sysId))
         {
-            existing.Status = status;
-            existing.RepairEtaS = eta;
-            existing.Health = health;
+            eng.RepairQueue.Add(sysId);
+            SimBus.Instance.PublishRepairQueue();
         }
-        else
-        {
-            _repairQueue.Add(new RepairQueueEntry { System = system, Status = status, RepairEtaS = eta, Health = health });
-        }
-        RefreshRepairItemList();
-        PublishRepairQueue();
+        SyncRepairQueueFromBus();
     }
 
     private void OnRepairRemoveSelected()
     {
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
         int[] sel = _repairItemList.GetSelectedItems();
         if (sel.Length == 0) return;
-        _repairQueue.RemoveAt(sel[0]);
-        RefreshRepairItemList();
-        PublishRepairQueue();
+        eng.RepairQueue.RemoveAt(sel[0]);
+        SimBus.Instance.PublishRepairQueue();
+        SyncRepairQueueFromBus();
     }
 
     private void OnRepairMove(int dir)
     {
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
         int[] sel = _repairItemList.GetSelectedItems();
         if (sel.Length == 0) return;
         int i = sel[0];
         int j = i + dir;
-        if (j < 0 || j >= _repairQueue.Count) return;
-        (_repairQueue[i], _repairQueue[j]) = (_repairQueue[j], _repairQueue[i]);
-        RefreshRepairItemList();
+        if (j < 0 || j >= eng.RepairQueue.Count) return;
+        (eng.RepairQueue[i], eng.RepairQueue[j]) = (eng.RepairQueue[j], eng.RepairQueue[i]);
+        SimBus.Instance.PublishRepairQueue();
+        SyncRepairQueueFromBus();
         _repairItemList.Select(j);
-        PublishRepairQueue();
     }
 
-    private void RefreshRepairItemList()
+    // Refreshes the repair item list from live EngineeringState. Called from
+    // _Process every frame so health and ETA stay current as repair ticks.
+    private void SyncRepairQueueFromBus()
     {
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
+        int prevSel = _repairItemList.GetSelectedItems() is { Length: > 0 } s ? s[0] : -1;
         _repairItemList.Clear();
-        foreach (var e in _repairQueue)
+        for (int i = 0; i < eng.RepairQueue.Count; i++)
         {
-            string eta = e.RepairEtaS > 0 ? $"{e.RepairEtaS}s" : "—";
-            _repairItemList.AddItem($"{e.System} ({e.Status}, {eta}, {e.Health}%)");
+            var sys = eng.GetById(eng.RepairQueue[i]);
+            string status = i == 0 ? "in_progress" : "queued";
+            string eta = sys.RepairEtaSeconds.HasValue ? $"{(int)sys.RepairEtaSeconds.Value}s" : "—";
+            _repairItemList.AddItem($"{sys.Id}  [{status}]  HP {sys.Health}  ETA {eta}");
         }
+        if (prevSel >= 0 && prevSel < eng.RepairQueue.Count)
+            _repairItemList.Select(prevSel);
     }
-
-    private void PublishRepairQueue()
-        => SimBus.Instance?.PublishAdminOverrideRepairQueue(BuildRepairQueuePayload());
-
-    private object[] BuildRepairQueuePayload()
-        => _repairQueue.Select(e => (object)new
-        {
-            system = e.System,
-            status = e.Status,
-            repair_eta_seconds = e.RepairEtaS > 0 ? (int?)e.RepairEtaS : null,
-            health = e.Health,
-        }).ToArray();
 
     private Control BuildCommsTab()
     {
