@@ -92,8 +92,7 @@ public partial class ControlPanelsWindow : Window
         "Weapons", "Engines", "FTL", "Reactor",
         "Utility 1", "Utility 2", "Utility 3", "Utility 4", "Hull",
     };
-    private Label[] _repairHealthLabels;
-    private Label[] _repairQueueLabels;
+    private ColorRect[] _repairStatusLeds;
     private Button[] _repairPriorityBtns;
 
     // ── Hardpoint panel state (one per slot) ──────────────────────────────
@@ -561,23 +560,13 @@ public partial class ControlPanelsWindow : Window
         root.AddChild(new Label { Text = "── Repair Priority ──" });
 
         int n = RepairSystemIds.Length;
-        _repairHealthLabels  = new Label[n];
-        _repairQueueLabels   = new Label[n];
-        _repairPriorityBtns  = new Button[n];
+        _repairStatusLeds   = new ColorRect[n];
+        _repairPriorityBtns = new Button[n];
 
         for (int idx = 0; idx < n; idx++)
         {
             int captured = idx; // capture for closure
-            _repairHealthLabels[idx] = new Label
-            {
-                Text = "HP 100",
-                CustomMinimumSize = new Vector2(60, 0),
-            };
-            _repairQueueLabels[idx] = new Label
-            {
-                Text = "HEALTHY",
-                CustomMinimumSize = new Vector2(110, 0),
-            };
+            _repairStatusLeds[idx] = MakeLed(LedOff);
             _repairPriorityBtns[idx] = new Button
             {
                 Text = "Prioritize",
@@ -588,8 +577,7 @@ public partial class ControlPanelsWindow : Window
 
             root.AddChild(Row(
                 new Label { Text = RepairSystemLabels[captured], CustomMinimumSize = new Vector2(80, 0) },
-                _repairHealthLabels[captured],
-                _repairQueueLabels[captured],
+                _repairStatusLeds[captured],
                 _repairPriorityBtns[captured]));
         }
 
@@ -614,7 +602,8 @@ public partial class ControlPanelsWindow : Window
         SyncRepairFromBus();
     }
 
-    // Updates repair health/queue labels and button states from live Engineering.
+    // Updates repair status LEDs and button states from live Engineering.
+    // LED colours: off = healthy, red = damaged/not queued, orange = queued, green = repairing.
     private void SyncRepairFromBus()
     {
         var eng = SimBus.Instance?.Engineering;
@@ -623,27 +612,26 @@ public partial class ControlPanelsWindow : Window
         for (int idx = 0; idx < RepairSystemIds.Length; idx++)
         {
             var sys = eng.GetById(RepairSystemIds[idx]);
-            _repairHealthLabels[idx].Text = $"HP {sys.Health}";
-
             int queuePos = eng.RepairQueue.IndexOf(sys.Id);
+
             if (sys.Health >= 100)
             {
-                _repairQueueLabels[idx].Text = "HEALTHY";
+                _repairStatusLeds[idx].Color = LedOff;
                 _repairPriorityBtns[idx].Disabled = true;
             }
             else if (queuePos == 0)
             {
-                _repairQueueLabels[idx].Text = "REPAIRING";
+                _repairStatusLeds[idx].Color = LedGreen;  // actively repairing
                 _repairPriorityBtns[idx].Disabled = true; // already first
             }
             else if (queuePos > 0)
             {
-                _repairQueueLabels[idx].Text = $"QUEUED #{queuePos}";
+                _repairStatusLeds[idx].Color = LedOrange; // queued, waiting
                 _repairPriorityBtns[idx].Disabled = false;
             }
             else
             {
-                _repairQueueLabels[idx].Text = "NOT QUEUED";
+                _repairStatusLeds[idx].Color = LedRed;    // damaged, not queued
                 _repairPriorityBtns[idx].Disabled = false;
             }
         }

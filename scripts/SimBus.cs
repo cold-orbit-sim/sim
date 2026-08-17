@@ -1407,20 +1407,23 @@ public partial class SimBus : Node
         string systemId, int health, bool disabled,
         string[] effects, int? powerAllocated, int? powerMax)
     {
-        // ADMIN OVERRIDE — replace when real sim logic exists
-        string? powerUnit = powerAllocated.HasValue ? "kW" : null;
-        string payload = JsonSerializer.Serialize(new
-        {
-            system    = systemId,
-            health,
-            power_allocated     = powerAllocated,
-            power_unit          = powerUnit,
-            power_max           = powerMax,
-            disabled,
-            effects,
-        });
-        Mqtt.Publish($"coldorbit/output/engineering/{systemId}/state", payload,
-            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+        // Write to live EngineeringState so ControlPanelsWindow and other
+        // in-process readers see the change immediately. disabled=true forces
+        // health to 0 (Disabled is derived from Health == 0).
+        var sys = Engineering.GetById(systemId);
+        sys.Health = disabled ? 0 : health;
+        if (powerAllocated.HasValue) sys.PowerAllocatedKW = powerAllocated;
+
+        // Sync repair queue: add if newly damaged, purge if restored to full.
+        if (sys.Health < 100 && !Engineering.RepairQueue.Contains(systemId))
+            Engineering.RepairQueue.Add(systemId);
+        else if (sys.Health >= 100)
+            Engineering.RepairQueue.Remove(systemId);
+
+        // effects[] from the admin panel are ignored — real effects are derived
+        // by BuildEffects() from health, so the MQTT payload reflects reality.
+        PublishEngineeringState();
+        PublishRepairQueue();
     }
 
     public void PublishAdminOverrideRepairQueue(object[] entries)
