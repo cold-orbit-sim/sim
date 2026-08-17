@@ -574,8 +574,9 @@ public partial class AdminPanelWindow : Window
             sys.HealthSlider.ValueChanged += _ => PublishEngSys(sys);
             root.AddChild(Labeled("Health", sys.HealthSlider));
 
-            sys.DisabledCheck = new CheckButton { Text = "Disabled" };
-            sys.DisabledCheck.Toggled += _ => PublishEngSys(sys);
+            // Read-only indicator: shows Disabled derived from health == 0.
+            // Not wired to PublishEngSys — drag the slider to 0 to disable.
+            sys.DisabledCheck = new CheckButton { Text = "Disabled", Disabled = true };
             root.AddChild(sys.DisabledCheck);
 
             sys.EffectsEdit = new LineEdit
@@ -610,13 +611,15 @@ public partial class AdminPanelWindow : Window
 
     private void PublishEngSys(EngSysState sys)
     {
-        int? powerAlloc  = sys.HasPower ? (int?)((int)sys.PowerAllocBox.Value) : null;
-        int? powerMax    = sys.HasPower ? (int?)((int)sys.PowerMaxBox.Value)   : null;
+        if (_mirrorActive) return;
+        int health = (int)sys.HealthSlider.Value;
+        int? powerAlloc = sys.HasPower ? (int?)((int)sys.PowerAllocBox.Value) : null;
+        int? powerMax   = sys.HasPower ? (int?)((int)sys.PowerMaxBox.Value)   : null;
         var effects = sys.EffectsEdit.Text
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // disabled is derived from health — the checkbox is a read-only indicator.
         SimBus.Instance?.PublishAdminOverrideEngineering(
-            sys.Id, (int)sys.HealthSlider.Value, sys.DisabledCheck.ButtonPressed,
-            effects, powerAlloc, powerMax);
+            sys.Id, health, disabled: health == 0, effects, powerAlloc, powerMax);
     }
 
     // Mirrors live EngineeringState health/disabled into the admin sliders so
