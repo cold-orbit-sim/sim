@@ -45,6 +45,10 @@ public partial class PlayerShip : RigidBody3D
     [Export] public float CollisionAlertThresholdN { get; set; } = 5000f; // impulse above this raises HULL IMPACT alert
     [Export] public float CollisionAlertDurationS { get; set; } = 3f;    // how long the alert stays active after impact
     [Export] public string Callsign { get; set; } = "Cold Orbit";        // ship callsign published to coldorbit/output/ship/callsign
+    [Export] public float DamageScaleN { get; set; } = 50000f;           // 50 kN impulse = 1 HP of damage
+    [Export] public float ZoneThreshold { get; set; } = 0.5f;            // dot-product threshold for front/rear vs side hit zones
+    [Export] public float ReactorOutputKW { get; set; } = 3000f;         // nominal reactor output for repair headroom calculation
+    [Export] public float RepairKWPerHPPerSecond { get; set; } = 50f;    // kW of headroom needed per HP/s of repair rate
     [Export] public float AtmosphereTopM { get; set; } = 2000f;          // altitude (Godot units) above which density is forced to zero
     [Export] public float ScaleHeightM { get; set; } = 700f;             // atmospheric scale height (Godot units); density = exp(-alt/scale)
     [Export] public float DragCoefficient { get; set; } = 0.0002f;       // drag = v² × coeff × density (N)
@@ -104,8 +108,17 @@ public partial class PlayerShip : RigidBody3D
     // cleared in HandleCollision (_PhysicsProcess). Both run on the main thread
     // in Godot's default non-multithreaded physics mode, so no lock is needed.
     private float _pendingCollisionImpulse = 0f;
+    private Vector3 _pendingCollisionNormal = Vector3.Zero; // world-space, paired with impulse
     private bool _collisionWantAlert = false;
     private float _collisionAlertTimer = 0f;
+
+    // Hull-damage alert (distinct from alert_collision — fires when damage HP is applied).
+    private bool _alertHullDamageActive = false;
+    private bool _hullDamageWantAlert = false;
+    private float _hullDamageAlertTimer = 0f;
+
+    // Set of system IDs currently showing a "DISABLED" alert.
+    private readonly System.Collections.Generic.HashSet<string> _alertDisabledSystems = new();
 
     // Mission-elapsed timer (seconds) used for alert timestamps.
     private float _missionTimeS = 0f;
@@ -189,6 +202,7 @@ public partial class PlayerShip : RigidBody3D
         SimBus.Instance.Propulsion.PowerPerEnginekW = PowerPerEnginekW;
         SimBus.Instance.Propulsion.CollisionAlertThresholdN = CollisionAlertThresholdN;
         SimBus.Instance.ShipCallsign = Callsign;
+        SimBus.Instance.Engineering.MaxEngineTempC = MaxEngineTemp;
 
         // Force alert re-publish after each broker reconnect so the touchscreen
         // recovers the correct alert state without waiting for a state change.
@@ -235,15 +249,18 @@ public partial class PlayerShip : RigidBody3D
     }
 
     // Reads impulse data from _IntegrateForces (physics thread → main thread handoff)
-    // and from the admin simulate path. Manages the 3 s alert window.
-    // Placeholder hookpoint: actual hull damage reduction goes here when designed.
+    // and from the admin simulate path. Applies damage, manages alert windows.
     private void HandleCollision(float dt)
     {
         // Pick up admin-simulated collision (set by AdminTriggerCollisionAlert).
         float adminN = SimBus.Instance.Propulsion.PendingAdminCollisionN;
         if (adminN > 0f)
         {
-            if (adminN > _pendingCollisionImpulse) _pendingCollisionImpulse = adminN;
+            if (adminN > _pendingCollisionImpulse)
+            {
+                _pendingCollisionImpulse = adminN;
+                _pendingCollisionNormal = -GlobalTransform.Basis.Z; // treat as bow-on hit
+            }
             SimBus.Instance.Propulsion.PendingAdminCollisionN = 0f;
         }
 
@@ -252,7 +269,20 @@ public partial class PlayerShip : RigidBody3D
             SimBus.Instance.Propulsion.CollisionForceN = _pendingCollisionImpulse;
             _collisionAlertTimer = CollisionAlertDurationS;
             _collisionWantAlert = true;
+
+            // Apply damage distribution and trigger hull-damage alert.
+            SimBus.Instance.Engineering.ApplyDamage(
+                _pendingCollisionImpulse, _pendingCollisionNormal,
+                GlobalTransform.Basis, DamageScaleN, ZoneThreshold);
+            _hullDamageWantAlert = true;
+            _hullDamageAlertTimer = 5f;
+
             _pendingCollisionImpulse = 0f;
+            _pendingCollisionNormal = Vector3.Zero;
+
+            // Immediate publish so displays see damage without waiting for telemetry tick.
+            SimBus.Instance.PublishEngineeringState();
+            SimBus.Instance.PublishRepairQueue();
         }
 
         if (_collisionWantAlert)
@@ -263,6 +293,13 @@ public partial class PlayerShip : RigidBody3D
                 _collisionWantAlert = false;
                 SimBus.Instance.Propulsion.CollisionForceN = 0f;
             }
+        }
+
+        if (_hullDamageWantAlert)
+        {
+            _hullDamageAlertTimer -= dt;
+            if (_hullDamageAlertTimer <= 0f)
+                _hullDamageWantAlert = false;
         }
     }
 
@@ -275,7 +312,11 @@ public partial class PlayerShip : RigidBody3D
         {
             float impulse = state.GetContactImpulse(i).Length();
             if (impulse > CollisionAlertThresholdN && impulse > _pendingCollisionImpulse)
+            {
                 _pendingCollisionImpulse = impulse;
+                // Convert local-body contact normal to world space for damage distribution.
+                _pendingCollisionNormal = state.Transform.Basis * state.GetContactLocalNormal(i);
+            }
         }
 
         // Gravity — inverse square toward planet centre (batch 14).
@@ -346,10 +387,12 @@ public partial class PlayerShip : RigidBody3D
         if (_inAtmosphere && prop.DampenersEnabled)
             prop.DampenersEnabled = false;
 
+        var eng = SimBus.Instance.Engineering;
         bool overtempBlocked = _propulsionOverheated && !prop.AdminOvertempBypass;
-        if (_thrustInput > 0f && !overtempBlocked)
+        if (_thrustInput > 0f && !overtempBlocked && !eng.Engines.Disabled)
         {
-            float effectiveThrust = ThrustForce * prop.AdminThrustMultiplier * (0.6f + 0.8f * _propellantMix);
+            float effectiveThrust = ThrustForce * prop.AdminThrustMultiplier
+                * (0.6f + 0.8f * _propellantMix) * eng.ThrustMultiplier;
             float direction = _reverseEnabled ? -1f : 1f;
             Vector3 forward = -GlobalTransform.Basis.Z; // Godot forward is -Z
             ApplyCentralForce(forward * effectiveThrust * direction);
@@ -394,11 +437,12 @@ public partial class PlayerShip : RigidBody3D
         _engineTemp -= _engineTemp * CoolingRate * dt;
         _engineTemp = Mathf.Clamp(_engineTemp, 0f, 1000f);
 
-        if (!_propulsionOverheated && _engineTemp >= MaxEngineTemp)
+        float effectiveMaxTemp = MaxEngineTemp * SimBus.Instance.Engineering.OverheatThresholdMultiplier;
+        if (!_propulsionOverheated && _engineTemp >= effectiveMaxTemp)
         {
             _propulsionOverheated = true;
         }
-        else if (_propulsionOverheated && _engineTemp < MaxEngineTemp)
+        else if (_propulsionOverheated && _engineTemp < effectiveMaxTemp)
         {
             _propulsionOverheated = false;
         }
@@ -531,7 +575,7 @@ public partial class PlayerShip : RigidBody3D
             propellantMix: _propellantMix,
             engineTemp: _engineTemp,
             overheated: _propulsionOverheated,
-            propulsionDisabled: _propulsionOverheated,
+            propulsionDisabled: _propulsionOverheated || SimBus.Instance.Engineering.Engines.Disabled,
             velocity: velocity,
             accelerationMs2: _smoothedAcceleration,
             throttleInput: _thrustInput,
@@ -617,8 +661,6 @@ public partial class PlayerShip : RigidBody3D
         }
 
         // Hull impact — event-based, auto-clears after CollisionAlertDurationS.
-        // _collisionWantAlert is driven by HandleCollision's 3 s timer.
-        // Placeholder for damage system: actual health reduction hooks in here.
         bool wantCollision = _collisionWantAlert;
         bool hasCollision = _alertCollisionActive;
         if (wantCollision && !hasCollision)
@@ -637,6 +679,54 @@ public partial class PlayerShip : RigidBody3D
             alerts.Active.RemoveAll(a => a.Id == "alert_collision");
             _alertCollisionActive = false;
             changed = true;
+        }
+
+        // Hull damage — distinct from alert_collision; fires when HP was taken.
+        // Auto-clears after 5 s (timer driven by HandleCollision).
+        bool wantHullDamage = _hullDamageWantAlert;
+        bool hasHullDamage = _alertHullDamageActive;
+        if (wantHullDamage && !hasHullDamage)
+        {
+            alerts.Active.Add(new SimBus.AlertEntry(
+                Id: "alert_hull_damage",
+                Severity: "caution",
+                System: "hull",
+                Message: "HULL IMPACT — DAMAGE TAKEN",
+                TimestampS: (long)_missionTimeS));
+            _alertHullDamageActive = true;
+            changed = true;
+        }
+        else if (!wantHullDamage && hasHullDamage)
+        {
+            alerts.Active.RemoveAll(a => a.Id == "alert_hull_damage");
+            _alertHullDamageActive = false;
+            changed = true;
+        }
+
+        // Per-subsystem DISABLED alerts: warning, sticky until health > 0 via repair.
+        var eng = SimBus.Instance.Engineering;
+        foreach (var sys in eng.AllSystems)
+        {
+            string alertId = $"alert_system_disabled_{sys.Id}";
+            bool wantDisabled = sys.Disabled;
+            bool hasDisabled  = _alertDisabledSystems.Contains(sys.Id);
+            if (wantDisabled && !hasDisabled)
+            {
+                alerts.Active.Add(new SimBus.AlertEntry(
+                    Id: alertId,
+                    Severity: "warning",
+                    System: sys.Id,
+                    Message: $"{sys.Id.Replace('_', ' ').ToUpperInvariant()} DISABLED",
+                    TimestampS: (long)_missionTimeS));
+                _alertDisabledSystems.Add(sys.Id);
+                changed = true;
+            }
+            else if (!wantDisabled && hasDisabled)
+            {
+                alerts.Active.RemoveAll(a => a.Id == alertId);
+                _alertDisabledSystems.Remove(sys.Id);
+                changed = true;
+            }
         }
 
         // Atmosphere entry — dampeners inoperable while below AtmosphereTopM.
@@ -673,6 +763,11 @@ public partial class PlayerShip : RigidBody3D
 
     private void PublishMqttTelemetry(float dt)
     {
+        // Advance repair every physics frame regardless of publish rate, so
+        // small rates accumulate correctly and aren't lost between ticks.
+        bool engineeringChanged = SimBus.Instance.Engineering.UpdateRepair(
+            dt, ReactorOutputKW, RepairKWPerHPPerSecond);
+
         _telemetryPublishAccumulator += dt;
         float interval = 1f / Mathf.Max(TelemetryPublishRateHz, 0.01f);
         if (_telemetryPublishAccumulator < interval) return;
@@ -681,6 +776,14 @@ public partial class PlayerShip : RigidBody3D
         var mqtt = SimBus.Instance.Mqtt;
         PublishPropulsionState(mqtt);
         PublishFtlState(mqtt);
+
+        // Publish engineering state at telemetry rate for ETA updates; also
+        // published immediately on damage (in HandleCollision).
+        if (engineeringChanged)
+        {
+            SimBus.Instance.PublishEngineeringState();
+            SimBus.Instance.PublishRepairQueue();
+        }
     }
 
     private void PublishPropulsionState(MqttTelemetryPublisher mqtt)
@@ -793,8 +896,9 @@ public partial class PlayerShip : RigidBody3D
         {
             case FtlPhase.Idle:
                 // Cooldown guards are already handled above; only act on VECTOR
-                // when actually armed and idle.
-                if (ftl.Armed && ftl.VectorRequested)
+                // when actually armed and idle, and FTL subsystem is not disabled.
+                if (ftl.Armed && ftl.VectorRequested
+                    && !SimBus.Instance.Engineering.Ftl.Disabled)
                 {
                     // No obstruction/traffic model exists yet, so the
                     // jump-point clear check always passes -- see
@@ -806,7 +910,8 @@ public partial class PlayerShip : RigidBody3D
                 break;
 
             case FtlPhase.Charging:
-                _ftlTimer += dt;
+                // Charge rate scales with FTL subsystem health; damaged FTL charges slower.
+                _ftlTimer += dt * SimBus.Instance.Engineering.FtlChargeRateMultiplier;
                 if (_ftlTimer >= FtlChargeDuration)
                 {
                     _ftlPhase = FtlPhase.Ready;

@@ -33,6 +33,7 @@ public partial class SimBus : Node
     public TouchscreenState Touchscreen { get; } = new();
     public AlertsState Alerts { get; } = new();
     public CameraState Cameras { get; } = new();
+    public EngineeringState Engineering { get; } = new();
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
     // Set by PlayerShip._Ready from its [Export]. Published retained on every
@@ -749,11 +750,11 @@ public partial class SimBus : Node
     // real telemetry when the corresponding sim logic is added.
     private void PublishStartupStubs()
     {
-        PublishEngineeringStubs();
+        PublishEngineeringState();
+        PublishRepairQueue();
         PublishCommsStubs();
         PublishTurretStubs();
         PublishMissileStubs();
-        PublishRepairQueueStubs();
         // Hardpoint stubs retired — real publish happens in OnMqttConnected.
 
         // TEMPORARY: always unlocked so the loadout screen is testable
@@ -765,55 +766,29 @@ public partial class SimBus : Node
             retain: true);
     }
 
-    private void PublishEngineeringStubs()
+    // Publishes real subsystem state for all nine systems. Called on broker connect
+    // and whenever health, disabled, or effects change (damage or repair).
+    internal void PublishEngineeringState()
     {
-        // MOCK — §3.1b engineering contract. Replace with real values when
-        // the engineering/damage system exists.
-        var systems = new[]
+        var eng = Engineering;
+        foreach (var sys in eng.AllSystems)
         {
-            new { id = "weapons",   hasPower = true  },
-            new { id = "engines",   hasPower = true  },
-            new { id = "ftl",       hasPower = true  },
-            new { id = "reactor",   hasPower = false },
-            new { id = "utility_1", hasPower = true  },
-            new { id = "utility_2", hasPower = true  },
-            new { id = "utility_3", hasPower = true  },
-            new { id = "utility_4", hasPower = true  },
-            new { id = "hull",      hasPower = false },
-        };
-
-        foreach (var sys in systems)
-        {
-            string payload;
-            if (sys.hasPower)
+            string? powerUnit = sys.PowerAllocatedKW.HasValue ? "kW" : null;
+            string payload = JsonSerializer.Serialize(new
             {
-                payload = JsonSerializer.Serialize(new
-                {
-                    system = sys.id,
-                    health = 100,
-                    power_allocated = (int?)200,
-                    power_unit = (string?)"kW",
-                    power_max = (int?)500,
-                    disabled = false,
-                    effects = System.Array.Empty<object>(),
-                });
-            }
-            else
-            {
-                payload = JsonSerializer.Serialize(new
-                {
-                    system = sys.id,
-                    health = 100,
-                    power_allocated = (int?)null,
-                    power_unit = (string?)null,
-                    power_max = (int?)null,
-                    disabled = false,
-                    effects = System.Array.Empty<object>(),
-                });
-            }
-
+                system           = sys.Id,
+                health           = sys.Health,
+                power_allocated  = sys.PowerAllocatedKW,
+                power_unit       = powerUnit,
+                power_max        = sys.PowerMaxKW,
+                disabled         = sys.Disabled,
+                effects          = eng.BuildEffects(sys),
+                repair_eta_seconds = sys.RepairEtaSeconds.HasValue
+                    ? (int?)((int)(sys.RepairEtaSeconds.Value + 0.5f))
+                    : null,
+            });
             Mqtt.Publish(
-                $"coldorbit/output/engineering/{sys.id}/state",
+                $"coldorbit/output/engineering/{sys.Id}/state",
                 payload,
                 MqttQualityOfServiceLevel.AtLeastOnce,
                 retain: true);
@@ -889,18 +864,27 @@ public partial class SimBus : Node
         }
     }
 
-    private void PublishRepairQueueStubs()
+    // Publishes the current repair queue as an ordered list. Called on broker
+    // connect and whenever the queue or repair ETAs change.
+    internal void PublishRepairQueue()
     {
-        // MOCK — repair-queue contract. Ordered list of subsystems awaiting
-        // repair, published as a dedicated topic. Replace with real repair
-        // logic when the damage/repair system exists.
-        var queue = new object[]
+        var eng = Engineering;
+        var entries = new object[eng.RepairQueue.Count];
+        for (int i = 0; i < eng.RepairQueue.Count; i++)
         {
-            new { system = "engines", status = "in_progress", repair_eta_seconds = (int?)180, health = 35 },
-            new { system = "ftl",     status = "queued",       repair_eta_seconds = (int?)60,  health = 70 },
-        };
+            var sys = eng.GetById(eng.RepairQueue[i]);
+            entries[i] = new
+            {
+                system             = sys.Id,
+                status             = i == 0 ? "in_progress" : "queued",
+                health             = sys.Health,
+                repair_eta_seconds = sys.RepairEtaSeconds.HasValue
+                    ? (int?)((int)(sys.RepairEtaSeconds.Value + 0.5f))
+                    : null,
+            };
+        }
         Mqtt.Publish("coldorbit/output/repair/queue",
-            JsonSerializer.Serialize(queue),
+            JsonSerializer.Serialize(entries),
             MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 
