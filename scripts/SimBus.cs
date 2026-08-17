@@ -1427,10 +1427,9 @@ public partial class SimBus : Node
         sys.Health = disabled ? 0 : health;
         if (powerAllocated.HasValue) sys.PowerAllocatedKW = powerAllocated;
 
-        // Sync repair queue: add if newly damaged, purge if restored to full.
-        if (sys.Health < 100 && !Engineering.RepairQueue.Contains(systemId))
-            Engineering.RepairQueue.Add(systemId);
-        else if (sys.Health >= 100)
+        // Purge from repair queue only if restored to full health.
+        // Queue is not auto-populated on damage — that is the player's call.
+        if (sys.Health >= 100)
             Engineering.RepairQueue.Remove(systemId);
 
         // effects[] from the admin panel are ignored — real effects are derived

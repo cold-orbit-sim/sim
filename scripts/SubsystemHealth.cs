@@ -149,8 +149,7 @@ public sealed class EngineeringState
     {
         if (hp <= 0) return;
         sys.Health -= hp;
-        if (sys.Health < 100 && !RepairQueue.Contains(sys.Id))
-            RepairQueue.Add(sys.Id);
+        // Queue is managed explicitly by the player; damage alone does not enqueue.
     }
 
     // Advance repair by dt seconds. Returns true when any health or ETA changed

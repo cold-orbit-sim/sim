@@ -761,12 +761,16 @@ public partial class PlayerShip : RigidBody3D
 
     // ── Rate-limited state publishes ──────────────────────────────────────
 
+    // Sticky flag: set true by any repair change between publish ticks, cleared
+    // after publish. Avoids losing changes that land on non-publish physics frames.
+    private bool _engineeringNeedsPublish = false;
+
     private void PublishMqttTelemetry(float dt)
     {
         // Advance repair every physics frame regardless of publish rate, so
         // small rates accumulate correctly and aren't lost between ticks.
-        bool engineeringChanged = SimBus.Instance.Engineering.UpdateRepair(
-            dt, ReactorOutputKW, RepairKWPerHPPerSecond);
+        if (SimBus.Instance.Engineering.UpdateRepair(dt, ReactorOutputKW, RepairKWPerHPPerSecond))
+            _engineeringNeedsPublish = true;
 
         _telemetryPublishAccumulator += dt;
         float interval = 1f / Mathf.Max(TelemetryPublishRateHz, 0.01f);
@@ -777,12 +781,11 @@ public partial class PlayerShip : RigidBody3D
         PublishPropulsionState(mqtt);
         PublishFtlState(mqtt);
 
-        // Publish engineering state at telemetry rate for ETA updates; also
-        // published immediately on damage (in HandleCollision).
-        if (engineeringChanged)
+        if (_engineeringNeedsPublish)
         {
             SimBus.Instance.PublishEngineeringState();
             SimBus.Instance.PublishRepairQueue();
+            _engineeringNeedsPublish = false;
         }
     }
 

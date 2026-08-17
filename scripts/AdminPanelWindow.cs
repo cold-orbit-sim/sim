@@ -240,6 +240,7 @@ public partial class AdminPanelWindow : Window
         SyncHardpointsFromBus();
         SyncCamerasFromBus();
         SyncRepairQueueFromBus();
+        SyncEngineeringFromBus();
     }
 
     // ── Layout helpers ────────────────────────────────────────────────────────
@@ -616,6 +617,22 @@ public partial class AdminPanelWindow : Window
         SimBus.Instance?.PublishAdminOverrideEngineering(
             sys.Id, (int)sys.HealthSlider.Value, sys.DisabledCheck.ButtonPressed,
             effects, powerAlloc, powerMax);
+    }
+
+    // Mirrors live EngineeringState health/disabled into the admin sliders so
+    // repair progress is reflected without the operator touching the controls.
+    private void SyncEngineeringFromBus()
+    {
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
+        _mirrorActive = true;
+        foreach (var sys in _engSystems)
+        {
+            var record = eng.GetById(sys.Id);
+            sys.HealthSlider.Value = record.Health;
+            sys.DisabledCheck.SetPressedNoSignal(record.Disabled);
+        }
+        _mirrorActive = false;
     }
 
     private Control BuildRepairQueueTab()
