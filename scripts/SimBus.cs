@@ -774,6 +774,18 @@ public partial class SimBus : Node
         foreach (var sys in eng.AllSystems)
         {
             string? powerUnit = sys.PowerAllocatedKW.HasValue ? "kW" : null;
+
+            // repair_status mirrors the physical panel LED:
+            //   "healthy"   — health == 100 (LED off)
+            //   "damaged"   — health < 100, not in repair queue (LED red)
+            //   "queued"    — in repair queue but not index 0 (LED orange)
+            //   "repairing" — index 0 in repair queue (LED green)
+            int qPos = eng.RepairQueue.IndexOf(sys.Id);
+            string repairStatus = sys.Health >= 100 ? "healthy"
+                : qPos == 0                         ? "repairing"
+                : qPos > 0                          ? "queued"
+                :                                     "damaged";
+
             string payload = JsonSerializer.Serialize(new
             {
                 system           = sys.Id,
@@ -783,6 +795,7 @@ public partial class SimBus : Node
                 power_max        = sys.PowerMaxKW,
                 disabled         = sys.Disabled,
                 effects          = eng.BuildEffects(sys),
+                repair_status    = repairStatus,
                 repair_eta_seconds = sys.RepairEtaSeconds.HasValue
                     ? (int?)((int)(sys.RepairEtaSeconds.Value + 0.5f))
                     : null,
