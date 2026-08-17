@@ -81,6 +81,21 @@ public partial class ControlPanelsWindow : Window
     private ColorRect[] _cameraLeds;
     private string _lastCameraView;
 
+    // ── Engineering / repair priority panel state ─────────────────────────
+    private static readonly string[] RepairSystemIds =
+    {
+        "weapons", "engines", "ftl", "reactor",
+        "utility_1", "utility_2", "utility_3", "utility_4", "hull",
+    };
+    private static readonly string[] RepairSystemLabels =
+    {
+        "Weapons", "Engines", "FTL", "Reactor",
+        "Utility 1", "Utility 2", "Utility 3", "Utility 4", "Hull",
+    };
+    private Label[] _repairHealthLabels;
+    private Label[] _repairQueueLabels;
+    private Button[] _repairPriorityBtns;
+
     // ── Hardpoint panel state (one per slot) ──────────────────────────────
     private sealed class HardpointPanelState
     {
@@ -127,6 +142,7 @@ public partial class ControlPanelsWindow : Window
         SyncCommsFromBus();
         SyncHardpointsFromBus();
         SyncCamerasFromBus();
+        SyncRepairFromBus();
     }
 
     // --- Layout helpers -----------------------------------------------
@@ -542,17 +558,95 @@ public partial class ControlPanelsWindow : Window
         root.AddChild(new Button { Text = "SCRAM" }); // hold-to-confirm deliberately skipped this batch
 
         root.AddChild(new HSeparator());
-        root.AddChild(new Label { Text = "Repair Priority" });
-        var repairRow1 = new HBoxContainer();
-        var repairRow2 = new HBoxContainer();
-        for (int i = 1; i <= 8; i++)
+        root.AddChild(new Label { Text = "── Repair Priority ──" });
+
+        int n = RepairSystemIds.Length;
+        _repairHealthLabels  = new Label[n];
+        _repairQueueLabels   = new Label[n];
+        _repairPriorityBtns  = new Button[n];
+
+        for (int idx = 0; idx < n; idx++)
         {
-            var btn = new Button { Text = $"Repair {i}" };
-            (i <= 4 ? repairRow1 : repairRow2).AddChild(btn);
+            int captured = idx; // capture for closure
+            _repairHealthLabels[idx] = new Label
+            {
+                Text = "HP 100",
+                CustomMinimumSize = new Vector2(60, 0),
+            };
+            _repairQueueLabels[idx] = new Label
+            {
+                Text = "HEALTHY",
+                CustomMinimumSize = new Vector2(110, 0),
+            };
+            _repairPriorityBtns[idx] = new Button
+            {
+                Text = "Prioritize",
+                Disabled = true,
+                CustomMinimumSize = new Vector2(90, 0),
+            };
+            _repairPriorityBtns[idx].Pressed += () => OnRepairPrioritize(captured);
+
+            root.AddChild(Row(
+                new Label { Text = RepairSystemLabels[captured], CustomMinimumSize = new Vector2(80, 0) },
+                _repairHealthLabels[captured],
+                _repairQueueLabels[captured],
+                _repairPriorityBtns[captured]));
         }
-        root.AddChild(repairRow1);
-        root.AddChild(repairRow2);
+
+        SyncRepairFromBus();
         return root;
+    }
+
+    // Moves the selected subsystem to the front of the repair queue (or adds
+    // it if not already queued). Does nothing for healthy systems. Publishes
+    // the updated queue immediately.
+    private void OnRepairPrioritize(int idx)
+    {
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
+        string sysId = RepairSystemIds[idx];
+        var sys = eng.GetById(sysId);
+        if (sys.Health >= 100) return;
+
+        eng.RepairQueue.Remove(sysId);
+        eng.RepairQueue.Insert(0, sysId);
+        SimBus.Instance.PublishRepairQueue();
+        SyncRepairFromBus();
+    }
+
+    // Updates repair health/queue labels and button states from live Engineering.
+    private void SyncRepairFromBus()
+    {
+        var eng = SimBus.Instance?.Engineering;
+        if (eng == null) return;
+
+        for (int idx = 0; idx < RepairSystemIds.Length; idx++)
+        {
+            var sys = eng.GetById(RepairSystemIds[idx]);
+            _repairHealthLabels[idx].Text = $"HP {sys.Health}";
+
+            int queuePos = eng.RepairQueue.IndexOf(sys.Id);
+            if (sys.Health >= 100)
+            {
+                _repairQueueLabels[idx].Text = "HEALTHY";
+                _repairPriorityBtns[idx].Disabled = true;
+            }
+            else if (queuePos == 0)
+            {
+                _repairQueueLabels[idx].Text = "REPAIRING";
+                _repairPriorityBtns[idx].Disabled = true; // already first
+            }
+            else if (queuePos > 0)
+            {
+                _repairQueueLabels[idx].Text = $"QUEUED #{queuePos}";
+                _repairPriorityBtns[idx].Disabled = false;
+            }
+            else
+            {
+                _repairQueueLabels[idx].Text = "NOT QUEUED";
+                _repairPriorityBtns[idx].Disabled = false;
+            }
+        }
     }
 
     private Control BuildHardpointTab(int slot)
