@@ -5,8 +5,11 @@
 
 [node name="SoiKerathStar" type="Node3D"]
 script = ExtResource("1")
-SpawnPosition = Vector3(0, 0, -300000)
+SpawnPosition = Vector3(0, 0, -350000)
 SoiBodyName = "Kerath"
 
 [node name="Star" type="Node3D" parent="."]
 script = ExtResource("2")
+StarRadiusM = 50000.0
+HeatZoneAltitudeM = 250000.0
+MaxHeatPerSecond = 400.0
