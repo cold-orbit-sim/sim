@@ -44,6 +44,10 @@ public partial class SimBus : Node
     // constants) and PlayerShip (via its own cached reference). Main-thread only.
     public Planet? Planet { get; set; }
 
+    // Set by PlayerShip._Ready. Read by SceneManager and Star to position/heat
+    // the ship without holding a scene-tree reference to PlayerShip.
+    public PlayerShip PlayerShipNode { get; set; }
+
     // Pending SurfaceGravity value from the admin panel, applied on the Godot
     // main thread in _Process (see AdminSetPlanetGravity).
     private float? _pendingPlanetGravity;
@@ -1081,10 +1085,15 @@ public partial class SimBus : Node
         // surface (crash state). Written by PlayerShip each physics frame.
         public float AltitudeM { get; private set; }
 
-        // SOI-body label ("Kael" inside the loose threshold, "Deep Space"
-        // outside). Label only — gravity has no SOI cutoff. Written by
-        // PlayerShip each physics frame.
-        public string SoiBody { get; private set; } = "Deep Space";
+        // SOI-body label set by SceneManager.LoadSoI when the active SoI scene
+        // changes. Published to MQTT via p.SoiBody in PublishPropulsionState.
+        // Label only — gravity has no SOI cutoff.
+        public string SoiBody { get; set; } = "Deep Space";
+
+        // Set each _PhysicsProcess by Star.cs when the ship is within the star's
+        // heat zone. PlayerShip reads it in HandleThrust and zeros it after applying
+        // so Star must re-set it every frame while the ship is in range.
+        public float ExternalHeatRate { get; set; } = 0f;
 
         // Dampener mode, derived from physics each frame:
         //   "off"          — dampeners disabled or thrust active
@@ -1124,7 +1133,7 @@ public partial class SimBus : Node
         public void PublishTelemetry(
             float propellantMix, float engineTemp, bool overheated, bool propulsionDisabled,
             float velocity, float accelerationMs2, float throttleInput, bool reverseEnabled,
-            float altitudeM, string soiBody, string dampenerMode)
+            float altitudeM, string dampenerMode)
         {
             PropellantMix = propellantMix;
             EngineTemp = engineTemp;
@@ -1135,7 +1144,6 @@ public partial class SimBus : Node
             ThrottleInput = throttleInput;
             ReverseEnabled = reverseEnabled;
             AltitudeM = altitudeM;
-            SoiBody = soiBody;
             DampenerMode = dampenerMode;
         }
     }

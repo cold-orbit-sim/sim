@@ -156,13 +156,9 @@ public partial class PlayerShip : RigidBody3D
             Friction = CollisionFriction,
         };
 
-        // Prefer the planet registered with SimBus (set in Planet._Ready, which
-        // runs before this because Planet is an earlier scene sibling). The C#
-        // script-class cast in GetNodeOrNull<Planet> can return null, so SimBus
-        // is the reliable source. Fall back to the exported NodePath lookup for
-        // scenes that wire the planet without registering it on SimBus.
-        _planet = SimBus.Instance.Planet
-                  ?? (PlanetPath.IsEmpty ? null : GetNodeOrNull<Planet>(PlanetPath));
+        // Planet reference comes from SimBus, set by SoiKael.OnPlayerEntered after
+        // SceneManager loads the SoI. Null at _Ready time (SoI loads deferred);
+        // refreshed from SimBus at the top of each _PhysicsProcess.
 
         RegisterKeyAction("thrust_forward", Key.W);
         RegisterKeyAction("thrust_reverse", Key.S);
@@ -197,6 +193,8 @@ public partial class PlayerShip : RigidBody3D
             }
         }
 
+        SimBus.Instance.PlayerShipNode = this;
+
         // Publish ship-config values to SimBus so admin methods can use them
         // without holding a reference to PlayerShip.
         SimBus.Instance.Propulsion.PowerPerEnginekW = PowerPerEnginekW;
@@ -213,6 +211,9 @@ public partial class PlayerShip : RigidBody3D
     {
         float dt = (float)delta;
         _missionTimeS += dt;
+
+        // Refresh planet ref from SimBus so SoI scene swaps take effect immediately.
+        _planet = SimBus.Instance.Planet;
 
         // Altitude above planet surface; negative below surface (crash state).
         _altitudeM = _planet != null
@@ -432,6 +433,13 @@ public partial class PlayerShip : RigidBody3D
         // Uses density from _IntegrateForces this frame and current velocity.
         _engineTemp += _pendingAtmoDensity * LinearVelocity.Length() * AtmoHeatRate * dt;
 
+        // Star proximity heat: applies only outside atmosphere (atmo wins when both
+        // sources are active). Star.cs writes ExternalHeatRate each _PhysicsProcess;
+        // zeroing here ensures it drops to 0 if Star leaves the scene mid-frame.
+        if (!_inAtmosphere)
+            _engineTemp += SimBus.Instance.Propulsion.ExternalHeatRate * dt;
+        SimBus.Instance.Propulsion.ExternalHeatRate = 0f;
+
         // Passive radiative cooling always applies, even mid-burn, so heat
         // generation above is the net-of-cooling delta in practice.
         _engineTemp -= _engineTemp * CoolingRate * dt;
@@ -581,18 +589,7 @@ public partial class PlayerShip : RigidBody3D
             throttleInput: _thrustInput,
             reverseEnabled: _reverseEnabled,
             altitudeM: _altitudeM,
-            soiBody: GetSoiBody(),
             dampenerMode: _dampenerMode);
-    }
-
-    // SOI-body label for telemetry: the planet's SoiName while within a loose
-    // distance threshold, "Deep Space" otherwise. Label-only -- gravity has no
-    // SOI cutoff (see Planet.cs).
-    private string GetSoiBody()
-    {
-        if (_planet == null) return "Deep Space";
-        float distToCentre = (_planet.GlobalPosition - GlobalPosition).Length();
-        return distToCentre <= _planet.PlanetRadius * 5f ? _planet.SoiName : "Deep Space";
     }
 
     // MQTT publish paths:
@@ -992,15 +989,22 @@ public partial class PlayerShip : RigidBody3D
 
     private void ExecuteJump(int destinationIndex)
     {
-        // Placeholder translation: no real star-system positions exist yet
-        // (README: "empty space ... no FTL yet"), so each destination maps
-        // to a fixed offset along the ship's current heading rather than an
-        // actual coordinate. Velocity resets to zero, since a jump is a
-        // discrete relocation, not a continuous burn.
-        Vector3 forward = -GlobalTransform.Basis.Z;
-        GlobalPosition += forward * FtlJumpDistance * (destinationIndex + 1);
-        LinearVelocity = Vector3.Zero;
-        AngularVelocity = Vector3.Zero;
+        var ftl = SimBus.Instance.Ftl;
+        var dest = new DriftData.Destination(ftl.SelectedSystemId, ftl.SelectedPlanetIndex, ftl.SelectedName);
+        string soiKey = ResolveDestinationToSoiKey(dest);
+        SceneManager.Instance.LoadSoI(soiKey, LinearVelocity);
+        // SceneManager sets Position to SpawnPosition and AngularVelocity to zero.
+    }
+
+    private static string ResolveDestinationToSoiKey(DriftData.Destination dest)
+    {
+        if (dest == null) return "kael";
+        if (dest.IsStar && dest.SystemId == "K")
+            return "kerath_star";
+        if (!dest.IsStar && dest.SystemId == "K" && dest.Name == "Kael")
+            return "kael";
+        GD.Print($"PlayerShip: no SoI scene for '{dest.Name}', loading kael as placeholder");
+        return "kael";
     }
 
     private void RegisterKeyAction(string action, Key key)

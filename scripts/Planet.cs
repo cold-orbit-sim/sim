@@ -34,13 +34,9 @@ public partial class Planet : StaticBody3D
 
     public override void _Ready()
     {
-        // Register with the sim bus so the admin panel can reach us (gravity
-        // override) and read planet constants without holding a scene ref.
-        if (SimBus.Instance != null)
-        {
-            SimBus.Instance.Planet = this;
-        }
-
+        // SimBus.Instance.Planet is set by SoiKael.OnPlayerEntered, not here.
+        // Planet._Ready runs before SceneManager calls OnPlayerEntered, so
+        // registering here would race with the SoI lifecycle callbacks.
         ApplyEarthTexture();
         AddCloudLayer();
     }

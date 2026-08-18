@@ -1,0 +1,12 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/SoiKerathStar.cs" id="1"]
+[ext_resource type="Script" path="res://scripts/Star.cs" id="2"]
+
+[node name="SoiKerathStar" type="Node3D"]
+script = ExtResource("1")
+SpawnPosition = Vector3(0, 0, -300000)
+SoiBodyName = "Kerath"
+
+[node name="Star" type="Node3D" parent="."]
+script = ExtResource("2")
