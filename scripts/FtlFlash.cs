@@ -8,7 +8,7 @@ namespace ColdOrbit.SimCore;
 // transparent over FlashDuration seconds.
 public partial class FtlFlash : CanvasLayer
 {
-    [Export] public float FlashDuration { get; set; } = 0.6f;
+    [Export] public float FlashDuration { get; set; } = 5.0f;
     [Export] public Color FlashColor { get; set; } = new Color(0.75f, 0.88f, 1.0f, 1.0f);
 
     private ColorRect _rect;
