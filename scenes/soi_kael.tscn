@@ -26,7 +26,7 @@ albedo_color = Color(1.0, 0.85, 0.5, 1)
 
 [node name="SoiKael" type="Node3D"]
 script = ExtResource("1")
-SpawnPosition = Vector3(0, 0, -10200)
+SpawnPosition = Vector3(0, 0, 0)
 SoiBodyName = "Kael"
 PlanetPath = NodePath("Planet")
 

@@ -991,20 +991,8 @@ public partial class PlayerShip : RigidBody3D
     {
         var ftl = SimBus.Instance.Ftl;
         var dest = new DriftData.Destination(ftl.SelectedSystemId, ftl.SelectedPlanetIndex, ftl.SelectedName);
-        string soiKey = ResolveDestinationToSoiKey(dest);
-        SceneManager.Instance.LoadSoI(soiKey, LinearVelocity);
-        // SceneManager sets Position to SpawnPosition and AngularVelocity to zero.
-    }
-
-    private static string ResolveDestinationToSoiKey(DriftData.Destination dest)
-    {
-        if (dest == null) return "kael";
-        if (dest.IsStar && dest.SystemId == "K")
-            return "kerath_star";
-        if (!dest.IsStar && dest.SystemId == "K" && dest.Name == "Kael")
-            return "kael";
-        GD.Print($"PlayerShip: no SoI scene for '{dest.Name}', loading kael as placeholder");
-        return "kael";
+        SceneManager.Instance.LoadSoI(dest, LinearVelocity);
+        // SceneManager places ship at SpawnPosition and zeroes AngularVelocity.
     }
 
     private void RegisterKeyAction(string action, Key key)
