@@ -57,7 +57,7 @@ public partial class SceneManager : Node
                 if (toBody.LengthSquared() > 0.0001f)
                 {
                     var up = Mathf.Abs(toBody.Dot(Vector3.Up)) > 0.99f ? Vector3.Forward : Vector3.Up;
-                    ship.GlobalBasis = Basis.LookingAt(toBody, up);
+                    ship.GlobalTransform = new Transform3D(Basis.LookingAt(toBody, up), ship.GlobalPosition);
                     ship.AngularVelocity = Vector3.Zero;
                 }
             }

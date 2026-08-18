@@ -878,6 +878,15 @@ public partial class PlayerShip : RigidBody3D
     private void HandleFtl(float dt)
     {
         var ftl = SimBus.Instance.Ftl;
+
+        if (ftl.PendingAdminReset)
+        {
+            ftl.PendingAdminReset = false;
+            _ftlPhase = FtlPhase.Idle;
+            _ftlTimer = 0f;
+            _ftlAborted = false;
+        }
+
         bool inFlight = _ftlPhase == FtlPhase.Charging || _ftlPhase == FtlPhase.Jumping;
 
         if (inFlight && SimBus.Instance.Propulsion.IsPropulsionDisabled)

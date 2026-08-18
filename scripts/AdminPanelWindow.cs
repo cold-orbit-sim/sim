@@ -482,7 +482,9 @@ public partial class AdminPanelWindow : Window
         {
             int idx = _ftlDestinationDropdown.Selected;
             if (idx < 0 || idx >= DriftData.Destinations.Length) return;
-            SceneManager.Instance.LoadSoI(DriftData.Destinations[idx], Vector3.Zero);
+            var dest = DriftData.Destinations[idx];
+            SimBus.Instance.Ftl.PendingAdminReset = true;
+            Callable.From(() => SceneManager.Instance.LoadSoI(dest, Vector3.Zero)).CallDeferred();
         };
         root.AddChild(instantJumpBtn);
 

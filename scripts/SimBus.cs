@@ -1281,6 +1281,9 @@ public partial class SimBus : Node
         public bool VectorRequested { get; set; }
         public bool JumpRequested { get; set; }
 
+        // Set by AdminPanelWindow instant-jump button; cleared by PlayerShip.HandleFtl.
+        public bool PendingAdminReset { get; set; } = false;
+
         // --- Telemetry: written by PlayerShip each physics frame, read by the FTL panel ---
         public FtlPhase Phase { get; private set; } = FtlPhase.Idle;
         public float ChargeProgress { get; private set; } // kept for ControlPanelsWindow UI
