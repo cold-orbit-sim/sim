@@ -225,6 +225,7 @@ public partial class PlayerShip : RigidBody3D
             _altitudeM = 0f;
 
         _inAtmosphere = (_planet != null && _altitudeM < AtmosphereTopM)
+                     || (_star != null && _altitudeM < _star.HeatZoneAltitudeM)
                      || SimBus.Instance.Propulsion.AdminAtmoSimulated;
 
         HandleSpawnReset();
@@ -740,7 +741,7 @@ public partial class PlayerShip : RigidBody3D
                 Id: "alert_atmo_dampeners_inop",
                 Severity: "caution",
                 System: "propulsion",
-                Message: "ATMOSPHERE DETECTED — DAMPENERS INOP",
+                Message: $"PROXIMITY ALERT — {SimBus.Instance.Propulsion.SoiBody.ToUpperInvariant()}",
                 TimestampS: (long)_missionTimeS));
             _alertAtmoActive = true;
             changed = true;

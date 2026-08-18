@@ -477,6 +477,15 @@ public partial class AdminPanelWindow : Window
         };
         root.AddChild(Labeled("Destination", _ftlDestinationDropdown));
 
+        var instantJumpBtn = new Button { Text = "Instant Jump (skip FTL)" };
+        instantJumpBtn.Pressed += () =>
+        {
+            int idx = _ftlDestinationDropdown.Selected;
+            if (idx < 0 || idx >= DriftData.Destinations.Length) return;
+            SceneManager.Instance.LoadSoI(DriftData.Destinations[idx], Vector3.Zero);
+        };
+        root.AddChild(instantJumpBtn);
+
         _ftlRangeSlider = MakeSlider(0, 20, 0, 0.01);
         root.AddChild(Labeled("Range AU (display-only)", _ftlRangeSlider));
 
@@ -517,9 +526,9 @@ public partial class AdminPanelWindow : Window
         ackCollisionBtn.Pressed += () => AcknowledgeAlert("alert_collision");
         root.AddChild(Row(_alertCollisionToggle, _alertCollisionAckedLabel, ackCollisionBtn));
 
-        _alertAtmoDampenersToggle = new CheckButton { Text = "ATMOSPHERE DETECTED — DAMPENERS INOP" };
+        _alertAtmoDampenersToggle = new CheckButton { Text = "PROXIMITY ALERT" };
         _alertAtmoDampenersToggle.Toggled += pressed =>
-            ToggleAlert("alert_atmo_dampeners_inop", "caution", "propulsion", "ATMOSPHERE DETECTED — DAMPENERS INOP", pressed);
+            ToggleAlert("alert_atmo_dampeners_inop", "caution", "propulsion", "PROXIMITY ALERT", pressed);
         _alertAtmoDampenersAckedLabel = new Label { Text = "" };
         var ackAtmoBtn = new Button { Text = "Acknowledge" };
         ackAtmoBtn.Pressed += () => AcknowledgeAlert("alert_atmo_dampeners_inop");

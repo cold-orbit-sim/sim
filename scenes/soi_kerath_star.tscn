@@ -5,7 +5,7 @@
 
 [node name="SoiKerathStar" type="Node3D"]
 script = ExtResource("1")
-SpawnPosition = Vector3(0, 0, -160000)
+SpawnPosition = Vector3(0, 0, -135000)
 SoiBodyName = "Kerath"
 
 [node name="Star" type="Node3D" parent="."]

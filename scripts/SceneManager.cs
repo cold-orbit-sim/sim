@@ -45,6 +45,24 @@ public partial class SceneManager : Node
         }
 
         soi.OnPlayerEntered();
+
+        // Orient ship toward the SoI body on arrival.
+        if (ship != null)
+        {
+            Vector3? bodyPos = SimBus.Instance.Planet?.GlobalPosition
+                            ?? SimBus.Instance.StarNode?.GlobalPosition;
+            if (bodyPos.HasValue)
+            {
+                var toBody = (bodyPos.Value - ship.GlobalPosition).Normalized();
+                if (toBody.LengthSquared() > 0.0001f)
+                {
+                    var up = Mathf.Abs(toBody.Dot(Vector3.Up)) > 0.99f ? Vector3.Forward : Vector3.Up;
+                    ship.GlobalBasis = Basis.LookingAt(toBody, up);
+                    ship.AngularVelocity = Vector3.Zero;
+                }
+            }
+        }
+
         SimBus.Instance.Propulsion.SoiBody = soi.SoiBodyName;
         SimBus.Instance.Ftl.CurrentSystemId = dest.SystemId;
     }
