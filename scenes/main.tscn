@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" uid="uid://b8ki1aiijwa87" path="res://cruiser.glb" id="6"]
 [ext_resource type="Script" uid="uid://cnvutdh06islp" path="res://scripts/ShipMesh.cs" id="7"]
 [ext_resource type="Script" uid="uid://ck7110d13aijr" path="res://scripts/CameraController.cs" id="8"]
+[ext_resource type="Script" path="res://scripts/FtlFlash.cs" id="9"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -49,32 +50,32 @@ shape = SubResource("BoxShape3D_1")
 [node name="CameraForward" type="Camera3D" parent="PlayerShip" unique_id=399414180]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, -25)
 near = 0.1
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraAft" type="Camera3D" parent="PlayerShip" unique_id=1759526634]
 transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 2, 26)
 near = 0.1
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraChase" type="Camera3D" parent="PlayerShip" unique_id=121110388]
 transform = Transform3D(1, 0, 0, 0, 0.9848077, 0.17364818, 0, -0.17364818, 0.9848077, 0, 15, 80)
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraDorsal" type="Camera3D" parent="PlayerShip" unique_id=282257889]
 transform = Transform3D(1, 0, 0, 0, 0.34202015, 0.9396926, 0, -0.9396926, 0.34202015, 0, 50, 10)
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraVentral" type="Camera3D" parent="PlayerShip" unique_id=575291567]
 transform = Transform3D(1, 0, 0, 0, 0.34202015, -0.9396926, 0, 0.9396926, 0.34202015, 0, -50, 10)
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraDocking" type="Camera3D" parent="PlayerShip" unique_id=732268339]
 transform = Transform3D(1, 0, 0, 0, 0.8660254, -0.5, 0, 0.5, 0.8660254, 0, -8, 25)
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraDamage" type="Camera3D" parent="PlayerShip" unique_id=31059663]
 transform = Transform3D(-4.371139e-08, 0.25881904, -0.9659258, 0, 0.9659258, 0.25881904, 1, 1.131334e-08, -4.222196e-08, 35, 10, 0)
-far = 100000.0
+far = 1000000.0
 
 [node name="CameraController" type="Node3D" parent="PlayerShip" unique_id=89033616]
 script = ExtResource("8")
@@ -85,6 +86,9 @@ CameraDorsalPath = NodePath("../CameraDorsal")
 CameraVentralPath = NodePath("../CameraVentral")
 CameraDockingPath = NodePath("../CameraDocking")
 CameraDamagePath = NodePath("../CameraDamage")
+
+[node name="FtlFlash" type="CanvasLayer" parent="."]
+script = ExtResource("9")
 
 [node name="HUD" type="CanvasLayer" parent="." unique_id=1994250287]
 
