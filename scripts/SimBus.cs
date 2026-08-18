@@ -48,6 +48,10 @@ public partial class SimBus : Node
     // the ship without holding a scene-tree reference to PlayerShip.
     public PlayerShip PlayerShipNode { get; set; }
 
+    // Set by SoiKerathStar / GenericSoI on enter; cleared on exit.
+    // Read by PlayerShip for altitude when no planet is present.
+    public Star StarNode { get; set; }
+
     // Pending SurfaceGravity value from the admin panel, applied on the Godot
     // main thread in _Process (see AdminSetPlanetGravity).
     private float? _pendingPlanetGravity;

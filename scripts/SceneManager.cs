@@ -80,6 +80,7 @@ public partial class SceneManager : Node
         star.HeatZoneAltitudeM = radius * 2f;
         star.MaxHeatPerSecond = HeatForStarType(system.StarType);
         soi.AddChild(star);
+        soi.SetStar(star);
 
         return soi;
     }

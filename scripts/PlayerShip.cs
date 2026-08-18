@@ -212,13 +212,17 @@ public partial class PlayerShip : RigidBody3D
         float dt = (float)delta;
         _missionTimeS += dt;
 
-        // Refresh planet ref from SimBus so SoI scene swaps take effect immediately.
+        // Refresh body refs from SimBus so SoI scene swaps take effect immediately.
         _planet = SimBus.Instance.Planet;
+        var _star = SimBus.Instance.StarNode;
 
-        // Altitude above planet surface; negative below surface (crash state).
-        _altitudeM = _planet != null
-            ? (_planet.GlobalPosition - GlobalPosition).Length() - _planet.PlanetRadius
-            : 0f;
+        // Altitude above nearest body's surface. Negative = inside the body.
+        if (_planet != null)
+            _altitudeM = (_planet.GlobalPosition - GlobalPosition).Length() - _planet.PlanetRadius;
+        else if (_star != null)
+            _altitudeM = GlobalPosition.DistanceTo(_star.GlobalPosition) - _star.StarRadiusM;
+        else
+            _altitudeM = 0f;
 
         _inAtmosphere = (_planet != null && _altitudeM < AtmosphereTopM)
                      || SimBus.Instance.Propulsion.AdminAtmoSimulated;
