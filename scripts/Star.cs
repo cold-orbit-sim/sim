@@ -28,6 +28,9 @@ public partial class Star : Node3D
         sphere.RadialSegments = 64;
         sphere.Rings = 32;
 
+        var inst = new MeshInstance3D();
+        inst.Mesh = sphere;
+
         var shader = GD.Load<Shader>("res://shaders/star_surface.gdshader");
         if (shader != null)
         {
@@ -37,7 +40,7 @@ public partial class Star : Node3D
             mat.SetShaderParameter("energy",       StarEmissionEnergy);
             mat.SetShaderParameter("speed",        0.12f);
             mat.SetShaderParameter("detail_scale", 3.5f);
-            sphere.Material = mat;
+            inst.MaterialOverride = mat;
         }
         else
         {
@@ -47,11 +50,9 @@ public partial class Star : Node3D
             mat.Emission = StarEmissionColor;
             mat.EmissionEnergyMultiplier = StarEmissionEnergy;
             mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-            sphere.Material = mat;
+            inst.MaterialOverride = mat;
         }
 
-        var inst = new MeshInstance3D();
-        inst.Mesh = sphere;
         AddChild(inst);
     }
 
@@ -70,15 +71,14 @@ public partial class Star : Node3D
 
         var mat = new ShaderMaterial();
         mat.Shader = shader;
-        // Blend star color toward white for the corona
-        mat.SetShaderParameter("corona_color",   StarEmissionColor.Lerp(new Color(1f, 1f, 1f), 0.35f));
-        mat.SetShaderParameter("corona_energy",  StarEmissionEnergy * 0.35f);
-        mat.SetShaderParameter("pulse_speed",    0.18f);
-        mat.SetShaderParameter("softness",       3.0f);
-        sphere.Material = mat;
+        mat.SetShaderParameter("corona_color",  StarEmissionColor.Lerp(new Color(1f, 1f, 1f), 0.35f));
+        mat.SetShaderParameter("corona_energy", StarEmissionEnergy * 0.35f);
+        mat.SetShaderParameter("pulse_speed",   0.18f);
+        mat.SetShaderParameter("softness",      3.0f);
 
         var inst = new MeshInstance3D();
         inst.Mesh = sphere;
+        inst.MaterialOverride = mat;
         inst.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
         AddChild(inst);
     }
