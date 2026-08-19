@@ -20,6 +20,8 @@ public partial class Star : Node3D
 
     // ── Surface sphere ──────────────────────────────────────────────────────────
 
+    private MeshInstance3D _surfaceMesh;
+
     private void BuildSurface()
     {
         var sphere = new SphereMesh();
@@ -28,32 +30,31 @@ public partial class Star : Node3D
         sphere.RadialSegments = 64;
         sphere.Rings = 32;
 
-        var inst = new MeshInstance3D();
-        inst.Mesh = sphere;
+        _surfaceMesh = new MeshInstance3D();
+        _surfaceMesh.Mesh = sphere;
 
         var shader = GD.Load<Shader>("res://shaders/star_surface.gdshader");
         if (shader != null)
         {
             var mat = new ShaderMaterial();
             mat.Shader = shader;
-            mat.SetShaderParameter("star_color",   StarEmissionColor);
-            mat.SetShaderParameter("energy",       StarEmissionEnergy);
-            mat.SetShaderParameter("speed",        0.12f);
-            mat.SetShaderParameter("detail_scale", 3.5f);
-            inst.MaterialOverride = mat;
+            mat.SetShaderParameter("star_color",   (Variant)StarEmissionColor);
+            mat.SetShaderParameter("energy",       (Variant)StarEmissionEnergy);
+            mat.SetShaderParameter("speed",        (Variant)0.12f);
+            mat.SetShaderParameter("detail_scale", (Variant)3.5f);
+            _surfaceMesh.MaterialOverride = mat;
         }
         else
         {
-            // Fallback: plain emissive sphere
             var mat = new StandardMaterial3D();
             mat.EmissionEnabled = true;
             mat.Emission = StarEmissionColor;
             mat.EmissionEnergyMultiplier = StarEmissionEnergy;
             mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-            inst.MaterialOverride = mat;
+            _surfaceMesh.MaterialOverride = mat;
         }
 
-        AddChild(inst);
+        AddChild(_surfaceMesh);
     }
 
     // ── Corona: slightly larger sphere, additive fresnel glow ───────────────────
