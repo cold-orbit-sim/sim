@@ -11,5 +11,7 @@ SoiBodyName = "Kerath"
 [node name="Star" type="Node3D" parent="."]
 script = ExtResource("2")
 StarRadiusM = 50000.0
+StarEmissionColor = Color(1, 0.78, 0.38, 1)
+StarEmissionEnergy = 10.0
 HeatZoneAltitudeM = 80000.0
 MaxHeatPerSecond = 400.0
