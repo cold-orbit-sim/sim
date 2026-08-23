@@ -14,6 +14,8 @@ public partial class ShipMesh : Node3D
     // Tunable in the editor without a rebuild.
     [Export] public Vector3 ModelRotationDeg { get; set; } = new Vector3(0, 90, 0);
 
+    [Export] public bool ApplyHullShader { get; set; } = true;
+
     private static readonly string[] BridgeNodes = { "bridge", "bridge_dome", "bridge_viewport" };
 
     // One material per glow overlay; updated each _Process frame.
@@ -33,6 +35,103 @@ public partial class ShipMesh : Node3D
         }
 
         BuildGlowOverlays();
+        ApplyWeatheredHull();
+    }
+
+    private void ApplyWeatheredHull()
+    {
+        if (!ApplyHullShader) return;
+
+        var shaderRes = GD.Load<Shader>("res://shaders/ship_hull.gdshader");
+        if (shaderRes == null)
+        {
+            GD.PrintErr("ShipMesh: ship_hull.gdshader not found");
+            return;
+        }
+
+        ShaderMaterial MakeMat(
+            Color baseCol, Color rustCol, Color grimeCol, Color scratchCol,
+            float rustCov, float grimeInt, float scratchInt, float uvScale,
+            float metalBase, float metalScratch, float roughBase, float roughScratch,
+            float normalStr)
+        {
+            var m = new ShaderMaterial { Shader = shaderRes };
+            m.SetShaderParameter("base_color",        baseCol);
+            m.SetShaderParameter("rust_color",        rustCol);
+            m.SetShaderParameter("grime_color",       grimeCol);
+            m.SetShaderParameter("scratch_color",     scratchCol);
+            m.SetShaderParameter("rust_coverage",     rustCov);
+            m.SetShaderParameter("grime_intensity",   grimeInt);
+            m.SetShaderParameter("scratch_intensity", scratchInt);
+            m.SetShaderParameter("uv_scale",          uvScale);
+            m.SetShaderParameter("metallic_base",     metalBase);
+            m.SetShaderParameter("metallic_scratch",  metalScratch);
+            m.SetShaderParameter("roughness_base",    roughBase);
+            m.SetShaderParameter("roughness_scratch", roughScratch);
+            m.SetShaderParameter("normal_strength",   normalStr);
+            return m;
+        }
+
+        var matHullPlate = MakeMat(
+            new Color(0.18f, 0.11f, 0.06f), new Color(0.52f, 0.22f, 0.06f),
+            new Color(0.07f, 0.05f, 0.03f), new Color(0.30f, 0.28f, 0.26f),
+            0.45f, 0.35f, 0.55f, 3.0f,
+            0.15f, 0.60f, 0.88f, 0.55f, 0.4f);
+
+        var matHullDark = MakeMat(
+            new Color(0.08f, 0.05f, 0.03f), new Color(0.40f, 0.16f, 0.04f),
+            new Color(0.04f, 0.03f, 0.02f), new Color(0.22f, 0.20f, 0.18f),
+            0.30f, 0.55f, 0.35f, 3.5f,
+            0.10f, 0.45f, 0.92f, 0.60f, 0.3f);
+
+        var matTrimMetal = MakeMat(
+            new Color(0.22f, 0.15f, 0.09f), new Color(0.45f, 0.18f, 0.05f),
+            new Color(0.07f, 0.05f, 0.03f), new Color(0.42f, 0.40f, 0.38f),
+            0.25f, 0.20f, 0.70f, 4.0f,
+            0.28f, 0.72f, 0.80f, 0.42f, 0.3f);
+
+        var matEtchLine = MakeMat(
+            new Color(0.06f, 0.04f, 0.02f), new Color(0.22f, 0.09f, 0.02f),
+            new Color(0.04f, 0.03f, 0.01f), new Color(0.15f, 0.14f, 0.13f),
+            0.15f, 0.40f, 0.20f, 2.0f,
+            0.08f, 0.30f, 0.95f, 0.75f, 0.2f);
+
+        var matFadedStripe = MakeMat(
+            new Color(0.28f, 0.10f, 0.05f), new Color(0.48f, 0.18f, 0.05f),
+            new Color(0.07f, 0.05f, 0.03f), new Color(0.32f, 0.28f, 0.24f),
+            0.30f, 0.30f, 0.60f, 3.0f,
+            0.12f, 0.55f, 0.90f, 0.58f, 0.35f);
+
+        ApplyHullRecursive(this, matHullPlate, matHullDark, matTrimMetal, matEtchLine, matFadedStripe);
+    }
+
+    private void ApplyHullRecursive(
+        Node node,
+        ShaderMaterial hull, ShaderMaterial dark, ShaderMaterial trim,
+        ShaderMaterial etch, ShaderMaterial stripe)
+    {
+        if (node is MeshInstance3D mi && mi.Mesh is ArrayMesh am)
+        {
+            int surfCount = am.GetSurfaceCount();
+            for (int s = 0; s < surfCount; s++)
+            {
+                string surfName = am.SurfaceGetName(s);
+                if (surfName == "engine_glow") continue;
+
+                ShaderMaterial mat = surfName switch
+                {
+                    "hull_dark"    => dark,
+                    "trim_metal"   => trim,
+                    "etch_line"    => etch,
+                    "faded_stripe" => stripe,
+                    _              => hull,
+                };
+                mi.SetSurfaceOverrideMaterial(s, mat);
+            }
+        }
+
+        foreach (Node child in node.GetChildren())
+            ApplyHullRecursive(child, hull, dark, trim, etch, stripe);
     }
 
     // Creates one additive glow MeshInstance3D (sibling) per visible GLB mesh.
