@@ -66,28 +66,27 @@ public partial class SceneManager : Node
         SimBus.Instance.Propulsion.SoiBody = soi.SoiBodyName;
         SimBus.Instance.Ftl.CurrentSystemId = dest.SystemId;
 
-        // Point the scene's directional light from the celestial body toward the ship,
-        // so the ship is lit from the correct direction regardless of SoI type.
-        OrientSunLight(soi);
+        // For star SoIs only: reorient the directional light so the ship is lit
+        // from the star's direction. Planet SoIs leave it as-is — main.tscn's
+        // original transform already points from the star's sky position.
+        if (dest.IsStar)
+            OrientSunLightFromStar(soi);
     }
 
-    private void OrientSunLight(BaseSoI soi)
+    private void OrientSunLightFromStar(BaseSoI soi)
     {
         var light = GetTree().Root.GetNodeOrNull<DirectionalLight3D>("Main/DirectionalLight3D");
         if (light == null) return;
 
-        Vector3 bodyPos = SimBus.Instance.StarNode?.GlobalPosition
-                       ?? SimBus.Instance.Planet?.GlobalPosition
-                       ?? Vector3.Zero;
-        var ship = SimBus.Instance.PlayerShipNode;
-        Vector3 shipPos = ship?.GlobalPosition ?? soi.SpawnPosition;
+        var starPos = SimBus.Instance.StarNode?.GlobalPosition ?? Vector3.Zero;
+        var ship    = SimBus.Instance.PlayerShipNode;
+        var shipPos = ship?.GlobalPosition ?? soi.SpawnPosition;
 
-        // Light direction = from body toward ship (so the ship's facing side is lit)
-        var fromBody = (shipPos - bodyPos).Normalized();
-        if (fromBody.LengthSquared() < 0.0001f) fromBody = Vector3.Back;
+        var fromStar = (shipPos - starPos).Normalized();
+        if (fromStar.LengthSquared() < 0.0001f) fromStar = Vector3.Back;
 
-        var up = Mathf.Abs(fromBody.Dot(Vector3.Up)) > 0.99f ? Vector3.Forward : Vector3.Up;
-        light.GlobalTransform = new Transform3D(Basis.LookingAt(fromBody, up), Vector3.Zero);
+        var up = Mathf.Abs(fromStar.Dot(Vector3.Up)) > 0.99f ? Vector3.Forward : Vector3.Up;
+        light.GlobalTransform = new Transform3D(Basis.LookingAt(fromStar, up), Vector3.Zero);
     }
 
     // Routes to a hand-crafted .tscn for home-system destinations, otherwise
