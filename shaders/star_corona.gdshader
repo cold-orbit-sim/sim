@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode blend_add, cull_front, depth_draw_never;
+render_mode unshaded, blend_add, cull_front, depth_draw_never;
 
 uniform vec4  corona_color  = vec4(1.0, 0.88, 0.55, 1.0);
 uniform float corona_energy = 1.8;
