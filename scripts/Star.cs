@@ -33,7 +33,9 @@ public partial class Star : Node3D
         _surfaceMesh = new MeshInstance3D();
         _surfaceMesh.Mesh = sphere;
 
+        GD.Print($"[Star._Ready] Color={StarEmissionColor} Energy={StarEmissionEnergy}");
         var shader = GD.Load<Shader>("res://shaders/star_surface.gdshader");
+        GD.Print($"[Star._Ready] shader={(shader != null ? shader.ResourcePath : "NULL")}");
         if (shader != null)
         {
             var mat = new ShaderMaterial();
@@ -48,10 +50,7 @@ public partial class Star : Node3D
         {
             var mat = new StandardMaterial3D();
             mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-            mat.AlbedoColor = StarEmissionColor;
-            mat.EmissionEnabled = true;
-            mat.Emission = StarEmissionColor;
-            mat.EmissionEnergyMultiplier = StarEmissionEnergy;
+            mat.AlbedoColor = new Color(1f, 0.78f, 0.38f);
             _surfaceMesh.MaterialOverride = mat;
         }
 
