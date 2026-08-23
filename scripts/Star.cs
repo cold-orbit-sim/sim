@@ -16,6 +16,7 @@ public partial class Star : Node3D
         BuildSurface();
         BuildGlow();
         BuildFlares();
+        BuildLight();
     }
 
     // ── Surface sphere ──────────────────────────────────────────────────────────
@@ -165,6 +166,19 @@ public partial class Star : Node3D
         particles.DrawPass1   = flareQuad;
 
         AddChild(particles);
+    }
+
+    // ── Point light from star position ──────────────────────────────────────────
+
+    private void BuildLight()
+    {
+        var light = new OmniLight3D();
+        light.LightEnergy     = 1.5f;
+        light.OmniRange       = 600000f;
+        light.OmniAttenuation = 0.5f;   // gentle falloff — ~80% at 100k, ~60% at 200k
+        light.LightColor      = StarEmissionColor.Lerp(new Color(1f, 1f, 1f), 0.4f);
+        light.ShadowEnabled   = false;
+        AddChild(light);
     }
 
     // ── Heat physics ────────────────────────────────────────────────────────────
