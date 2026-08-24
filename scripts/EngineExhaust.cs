@@ -51,8 +51,13 @@ public partial class EngineExhaust : Node3D
     [Export] public Vector3 GlowMarkerOffset = new Vector3(0, 0, 1.5f);
     [Export] public float GlowMarkerRadius = 0.5f;
     [Export] public Color GlowMarkerColor = new Color(1.0f, 0.45f, 0.12f);
-    [Export] public float GlowMarkerIdleEnergy = 1.0f;
-    [Export] public float GlowMarkerMaxEnergy = 6.0f;
+
+    // Flat, unconditional — applied directly with no throttle gating or smoothing
+    // while dialing in. (The previous idle/max pair was blended by ThrottleInput,
+    // so editing "max" while sitting still at throttle=0 correctly did nothing —
+    // confusing for tuning. Once a good value is found, throttle-driven idle/max/
+    // off-on-reverse behavior gets restored using it as the peak reference.)
+    [Export] public float GlowMarkerEnergy = 6.0f;
 
     private GpuParticles3D _emberParticles;
     private ParticleProcessMaterial _emberProcMat;
@@ -64,7 +69,6 @@ public partial class EngineExhaust : Node3D
 
     private float _smoothedParticle;
     private float _smoothedCore;
-    private float _smoothedGlow;
 
     public override void _Ready()
     {
@@ -245,8 +249,6 @@ public partial class EngineExhaust : Node3D
         _glowMarkerMat.AlbedoColor = GlowMarkerColor;
         _glowMarkerMat.Emission = GlowMarkerColor;
 
-        float targetGlow = fires ? Mathf.Lerp(GlowMarkerIdleEnergy, GlowMarkerMaxEnergy, throttle) : 0f;
-        _smoothedGlow = Mathf.Lerp(_smoothedGlow, targetGlow, k);
-        _glowMarkerMat.EmissionEnergyMultiplier = _smoothedGlow;
+        _glowMarkerMat.EmissionEnergyMultiplier = GlowMarkerEnergy;
     }
 }
