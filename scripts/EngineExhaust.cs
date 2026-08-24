@@ -41,15 +41,13 @@ public partial class EngineExhaust : Node3D
     [Export] public float ResponseRate = 3f;
 
     // Nozzle glow marker — a standalone bright sphere, NOT part of the GLB mesh
-    // chain. engine_core's own emissive disc is confirmed unreachable from normal
-    // viewing angles (proved via a debug marker placed 20m clear of the hull —
-    // still visible there, so the material system was never the problem; the
-    // disc itself is geometrically blocked, likely recessed inside engine_nozzle).
-    // This marker is the permanent replacement. All four fields are tunable live
-    // in the Remote Inspector during Play — report back whatever values look
-    // right and they'll get baked in as the new defaults.
-    [Export] public Vector3 GlowMarkerOffset = new Vector3(0, 0, 1.5f);
-    [Export] public float GlowMarkerRadius = 0.5f;
+    // chain (engine_core's own emissive disc was unreachable from normal viewing
+    // angles). Defaults below are confirmed-visible values from play-testing —
+    // these are dynamically-spawned nodes with nothing saved to a scene file, so
+    // Remote Inspector edits during Play don't persist between sessions; update
+    // these defaults (not just the live Inspector) whenever a new value is confirmed.
+    [Export] public Vector3 GlowMarkerOffset = new Vector3(0, 0, 0f);
+    [Export] public float GlowMarkerRadius = 1.0f;
     [Export] public Color GlowMarkerColor = new Color(1.0f, 0.45f, 0.12f);
 
     // Flat, unconditional — applied directly with no throttle gating or smoothing
