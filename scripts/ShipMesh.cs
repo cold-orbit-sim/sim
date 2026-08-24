@@ -343,7 +343,11 @@ public partial class ShipMesh : Node3D
                 // turns that into a natural fade rather than a hard cut. NOTE: "unarmed"
                 // per user feedback maps to IsPropulsionDisabled — Propulsion has no
                 // separate Armed flag (see EngineExhaust.cs / batch 22 handback).
-                float targetEnergy = entryFires ? Mathf.Lerp(0.6f, 4.5f, throttle) : 0f;
+                // Idle floor and peak both raised well past "slight" as a visibility
+                // sanity check — three previous structural fixes (transparency, material
+                // cast, culling) haven't resolved this, so ruling out plain dimness
+                // against the near-black space background before hunting further.
+                float targetEnergy = entryFires ? Mathf.Lerp(2.5f, 9.0f, throttle) : 0f;
                 entry.Energy = Mathf.Lerp(entry.Energy, targetEnergy, k);
                 entry.Material.EmissionEnergyMultiplier = entry.Energy;
             }
