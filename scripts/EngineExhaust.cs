@@ -9,15 +9,24 @@ public partial class EngineExhaust : Node3D
 {
     [Export] public float MaxPlumeLength = 14f;
     [Export] public float MaxPlumeRadius = 1.6f;
-    [Export] public float IdlePlumeFraction = 0.12f;   // visible even at throttle=0 — "engine running" cue
+    [Export] public float IdlePlumeFraction = 0.12f;       // plume visible even at throttle=0 — "engine running" cue
+    [Export] public float IdleParticleFraction = 0.03f;    // ~25% of the old idle particle density (was 0.12*1.1)
     [Export] public int MaxParticles = 48;
     [Export] public float ParticleBaseSpeed = 40f;
     [Export] public float ParticleMaxSpeedBoost = 160f;
+
+    // How fast the plume/particles/glow ease toward their target level, in 1/s
+    // (higher = snappier). Shared by spool-up and spool-down so a throttle cut
+    // or a propulsion-disable both decay naturally instead of snapping to zero.
+    [Export] public float ResponseRate = 3f;
 
     private MeshInstance3D _plumeCore;
     private ShaderMaterial _plumeMat;
     private GpuParticles3D _emberParticles;
     private ParticleProcessMaterial _emberProcMat;
+
+    private float _smoothedPlume;
+    private float _smoothedParticle;
 
     public override void _Ready()
     {
@@ -107,27 +116,36 @@ public partial class EngineExhaust : Node3D
         if (prop == null) return;
 
         // NOTE: PropulsionState has no Armed flag (only Hardpoints/Ftl do) — main
-        // engines have no arm/disarm state, so "running" is just "not disabled".
+        // engines have no arm/disarm state, so "unarmed" here means IsPropulsionDisabled.
         // See batch 22 handback for the field-name deviation from the handover spec.
         bool running = !prop.IsPropulsionDisabled;
         float throttle = running ? prop.ThrottleInput : 0f;
         float mix = prop.PropellantMix; // 0 = Economy, 1 = Power
 
-        // Idle floor: a faint running plume even at zero throttle, so "engine on" reads visually.
-        float effectiveThrottle = running ? Mathf.Max(throttle, IdlePlumeFraction) : 0f;
+        // Idle floors: a faint running plume/particle trickle even at throttle=0, so
+        // "engine on" reads visually — but the two floors are independent (particles
+        // want to be much sparser than the plume looks at idle). Both targets fall to
+        // zero the instant the engine is disabled; the smoothing below is what makes
+        // that read as a fade instead of a snap.
+        float targetPlume = running ? Mathf.Max(throttle, IdlePlumeFraction) : 0f;
+        float targetParticle = running ? Mathf.Max(throttle * 1.1f, IdleParticleFraction) : 0f;
 
-        _plumeMat.SetShaderParameter("throttle", effectiveThrottle);
+        float k = 1f - Mathf.Exp(-ResponseRate * (float)delta);
+        _smoothedPlume = Mathf.Lerp(_smoothedPlume, targetPlume, k);
+        _smoothedParticle = Mathf.Lerp(_smoothedParticle, targetParticle, k);
+
+        _plumeMat.SetShaderParameter("throttle", _smoothedPlume);
         _plumeMat.SetShaderParameter("heat", mix);
 
         // Plume geometry scales with throttle — longer, fatter burn at higher throttle.
-        float lengthScale = Mathf.Lerp(0.35f, 1.0f, effectiveThrottle);
-        float radiusScale = Mathf.Lerp(0.4f, 1.0f, effectiveThrottle);
+        float lengthScale = Mathf.Lerp(0.35f, 1.0f, _smoothedPlume);
+        float radiusScale = Mathf.Lerp(0.4f, 1.0f, _smoothedPlume);
         _plumeCore.Scale = new Vector3(radiusScale, radiusScale, lengthScale);
 
         // Particle density and speed scale with throttle. AmountRatio is the cheap way
         // to vary visible particle count without rebuilding the GPU particle system.
-        _emberParticles.AmountRatio = Mathf.Clamp(effectiveThrottle * 1.1f, 0f, 1f);
-        _emberProcMat.InitialVelocityMin = ParticleBaseSpeed * (0.5f + 0.5f * effectiveThrottle);
-        _emberProcMat.InitialVelocityMax = _emberProcMat.InitialVelocityMin + ParticleMaxSpeedBoost * effectiveThrottle;
+        _emberParticles.AmountRatio = Mathf.Clamp(_smoothedParticle, 0f, 1f);
+        _emberProcMat.InitialVelocityMin = ParticleBaseSpeed * (0.5f + 0.5f * _smoothedPlume);
+        _emberProcMat.InitialVelocityMax = _emberProcMat.InitialVelocityMin + ParticleMaxSpeedBoost * _smoothedPlume;
     }
 }

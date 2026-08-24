@@ -25,6 +25,13 @@ public partial class ShipMesh : Node3D
     // Duplicated engine_glow materials (one per nozzle), brightened with throttle.
     private readonly List<StandardMaterial3D> _engineGlowMaterials = new();
 
+    // How fast the nozzle glow eases toward its target brightness, in 1/s. Shared by
+    // spool-up and the fade-to-off on disable, so cutting propulsion reads as the
+    // glow dying down naturally rather than snapping off.
+    [Export] public float EngineGlowResponseRate = 2.5f;
+
+    private float _engineGlowEnergy;
+
     public override void _Ready()
     {
         RotationDegrees = ModelRotationDeg;
@@ -264,10 +271,20 @@ public partial class ShipMesh : Node3D
         if (_engineGlowMaterials.Count > 0)
         {
             var prop = SimBus.Instance?.Propulsion;
-            float t = (prop != null && !prop.IsPropulsionDisabled) ? prop.ThrottleInput : 0f;
-            float energy = Mathf.Lerp(1.0f, 4.5f, t); // 1.0 matches GLB's baked emissiveStrength floor
+            bool running = prop != null && !prop.IsPropulsionDisabled;
+
+            // Slight orange glow at idle, brightening toward the throttle-driven peak;
+            // zero (fully off) is the target the instant propulsion is disabled — the
+            // smoothing below turns that into a natural fade rather than a hard cut.
+            // NOTE: "unarmed" per user feedback maps to IsPropulsionDisabled — Propulsion
+            // has no separate Armed flag (see EngineExhaust.cs / batch 22 handback).
+            float targetEnergy = running ? Mathf.Lerp(0.6f, 4.5f, prop.ThrottleInput) : 0f;
+
+            float k = 1f - Mathf.Exp(-EngineGlowResponseRate * (float)delta);
+            _engineGlowEnergy = Mathf.Lerp(_engineGlowEnergy, targetEnergy, k);
+
             foreach (var mat in _engineGlowMaterials)
-                mat.EmissionEnergyMultiplier = energy;
+                mat.EmissionEnergyMultiplier = _engineGlowEnergy;
         }
     }
 
