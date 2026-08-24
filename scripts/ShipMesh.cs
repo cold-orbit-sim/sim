@@ -215,6 +215,14 @@ public partial class ShipMesh : Node3D
                     // makes the throttle-driven glow self-contained either way.
                     unique.EmissionEnabled = true;
                     unique.Emission = new Color(1.0f, 0.45f, 0.12f);
+                    // Disable culling: if this disc's winding puts its "front" face
+                    // into the hull rather than outward (plausible given how the node's
+                    // own baked rotation already turned out backwards once before — see
+                    // the nozzle-orientation fix above), a camera behind the ship would
+                    // be looking at the culled back face and see nothing at all, which
+                    // would look identical to "the glow isn't rendering" regardless of
+                    // any emission setting. Costs nothing on three small discs.
+                    unique.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
                     mi.SetSurfaceOverrideMaterial(s, unique);
                     _engineGlowMaterials.Add(unique);
                 }
@@ -222,6 +230,7 @@ public partial class ShipMesh : Node3D
                 {
                     GD.PrintErr($"ShipMesh: engine_glow surface material is {mat?.GetType().Name ?? "null"}, not a BaseMaterial3D — nozzle glow not wired for this surface");
                 }
+                GD.Print($"ShipMesh: engine_glow surface found on '{mi.Name}' (material type: {mat?.GetType().Name ?? "null"})");
 
                 // Each engine_glow-surfaced mesh in cruiser.glb (engine_core x3) is its
                 // own small node, confirmed against the GLB's node list — but the node

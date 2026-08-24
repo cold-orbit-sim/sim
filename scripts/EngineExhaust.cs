@@ -134,12 +134,12 @@ public partial class EngineExhaust : Node3D
         _coreParticles = new GpuParticles3D
         {
             Amount = MaxCoreParticles,
-            Lifetime = 0.45,   // short — these fill the near-nozzle region densely, not a trail
+            Lifetime = 0.36,   // 80% of the original 0.45s, per feedback
             Emitting = true,
             Position = Vector3.Zero
         };
 
-        var mesh = new SphereMesh { Radius = 0.22f, Height = 0.44f, RadialSegments = 6, Rings = 3 };
+        var mesh = new SphereMesh { Radius = 0.176f, Height = 0.352f, RadialSegments = 6, Rings = 3 }; // 80% of original
         _coreParticles.DrawPass1 = mesh;
 
         _coreProcMat = new ParticleProcessMaterial
@@ -149,8 +149,8 @@ public partial class EngineExhaust : Node3D
             Gravity = Vector3.Zero,                // VACUUM — same invariant as the ember emitter
             InitialVelocityMin = CoreParticleBaseSpeed,
             InitialVelocityMax = CoreParticleBaseSpeed + CoreParticleMaxSpeedBoost,
-            ScaleMin = 0.8f,
-            ScaleMax = 1.6f,
+            ScaleMin = 0.64f,  // 80% of original 0.8
+            ScaleMax = 1.28f,  // 80% of original 1.6
             EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
             EmissionSphereRadius = 0.15f
         };
