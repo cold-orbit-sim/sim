@@ -52,6 +52,35 @@ public partial class EngineExhaust : Node3D
     {
         BuildEmberParticles();
         BuildCoreParticles();
+        BuildDebugGlowMarker();
+    }
+
+    // TEMPORARY diagnostic — a plain bright sphere floating well clear of the hull
+    // (20m aft, past all the particle activity), using a fresh material completely
+    // unrelated to the GLB import chain. If this doesn't glow either, the problem is
+    // something scene/renderer-wide, not specific to engine_core's material or
+    // position. If it DOES glow, engine_core's own disc is being blocked by
+    // something geometric (recessed inside the nozzle bell, hull overlap, etc.) and
+    // the fix is positional, not a material bug at all. Remove once diagnosed.
+    private void BuildDebugGlowMarker()
+    {
+        var mesh = new SphereMesh { Radius = 1.0f, Height = 2.0f };
+        var mat = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(1.0f, 0.45f, 0.12f),
+            EmissionEnabled = true,
+            Emission = new Color(1.0f, 0.45f, 0.12f),
+            EmissionEnergyMultiplier = 6.0f,
+        };
+        mesh.Material = mat;
+
+        var marker = new MeshInstance3D
+        {
+            Mesh = mesh,
+            Position = new Vector3(0, 0, 20f)
+        };
+        AddChild(marker);
     }
 
     private void BuildEmberParticles()
