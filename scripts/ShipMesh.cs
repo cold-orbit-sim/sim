@@ -15,11 +15,15 @@ public partial class ShipMesh : Node3D
     [Export] public Vector3 ModelRotationDeg { get; set; } = new Vector3(0, 90, 0);
 
     [Export] public bool ApplyHullShader { get; set; } = true;
+    [Export] public bool ApplyEngineExhaust { get; set; } = true;
 
     private static readonly string[] BridgeNodes = { "bridge", "bridge_dome", "bridge_viewport" };
 
     // One material per glow overlay; updated each _Process frame.
     private readonly List<StandardMaterial3D> _glowMaterials = new();
+
+    // Duplicated engine_glow materials (one per nozzle), brightened with throttle.
+    private readonly List<StandardMaterial3D> _engineGlowMaterials = new();
 
     public override void _Ready()
     {
@@ -36,6 +40,7 @@ public partial class ShipMesh : Node3D
 
         BuildGlowOverlays();
         ApplyWeatheredHull();
+        ApplyEngineExhaustEffects();
     }
 
     private void ApplyWeatheredHull()
@@ -134,6 +139,69 @@ public partial class ShipMesh : Node3D
             ApplyHullRecursive(child, hull, dark, trim, etch, stripe);
     }
 
+    // Spawns an EngineExhaust node (plume + ember particles) at each engine_glow
+    // nozzle surface, and gives each nozzle its own mutable emissive material so
+    // brightness can be driven per-frame without touching the shared GLB resource.
+    private void ApplyEngineExhaustEffects()
+    {
+        if (!ApplyEngineExhaust) return;
+
+        var nozzlePositions = new List<Vector3>();
+        FindEngineGlowSurfaces(this, nozzlePositions);
+
+        if (nozzlePositions.Count == 0)
+        {
+            GD.PrintErr("ShipMesh: no engine_glow surfaces found — exhaust effects not spawned");
+            return;
+        }
+
+        foreach (var pos in nozzlePositions)
+        {
+            var exhaust = new EngineExhaust();
+            AddChild(exhaust);
+            exhaust.GlobalTransform = new Transform3D(GlobalTransform.Basis, pos);
+        }
+    }
+
+    // Only "engine_core"-named nodes carry a real nozzle in cruiser.glb. The GLB
+    // also reuses the "engine_glow" material name on bridge_viewport's glass (a
+    // quirk in the source asset, confirmed by inspecting the GLB JSON directly) —
+    // matching by material name alone would spawn a spurious plume at the bridge
+    // dome, so bridge nodes are excluded explicitly (reusing BridgeNodes).
+    private void FindEngineGlowSurfaces(Node node, List<Vector3> positions)
+    {
+        if (System.Array.IndexOf(BridgeNodes, node.Name.ToString()) >= 0)
+            return;
+
+        if (node is MeshInstance3D mi && mi.Mesh is ArrayMesh am)
+        {
+            for (int s = 0; s < am.GetSurfaceCount(); s++)
+            {
+                if (am.SurfaceGetName(s) != "engine_glow") continue;
+
+                // Duplicate before mutating — StandardMaterial3D from a GLB import is a
+                // shared resource; setting properties on it directly would affect every
+                // instance of this mesh, not just this ship (same caution as the hull
+                // weathering pass above).
+                var mat = mi.GetActiveMaterial(s);
+                if (mat is StandardMaterial3D std)
+                {
+                    var unique = (StandardMaterial3D)std.Duplicate();
+                    mi.SetSurfaceOverrideMaterial(s, unique);
+                    _engineGlowMaterials.Add(unique);
+                }
+
+                // Each engine_glow-surfaced mesh in cruiser.glb (engine_core x3) is its
+                // own small node, confirmed against the GLB's node list — so the node's
+                // own global position is the nozzle mount point.
+                positions.Add(mi.GlobalPosition);
+            }
+        }
+
+        foreach (Node child in node.GetChildren())
+            FindEngineGlowSurfaces(child, positions);
+    }
+
     // Creates one additive glow MeshInstance3D (sibling) per visible GLB mesh.
     // Each overlay uses the same Mesh but is scaled up by 1.002× so it
     // wraps the hull without z-fighting.
@@ -169,11 +237,22 @@ public partial class ShipMesh : Node3D
 
     public override void _Process(double delta)
     {
-        if (_glowMaterials.Count == 0) return;
-        float temp = SimBus.Instance?.Propulsion.EngineTemp ?? 0f;
-        Color glow = GlowColor(temp);
-        foreach (var mat in _glowMaterials)
-            mat.AlbedoColor = glow;
+        if (_glowMaterials.Count > 0)
+        {
+            float temp = SimBus.Instance?.Propulsion.EngineTemp ?? 0f;
+            Color glow = GlowColor(temp);
+            foreach (var mat in _glowMaterials)
+                mat.AlbedoColor = glow;
+        }
+
+        if (_engineGlowMaterials.Count > 0)
+        {
+            var prop = SimBus.Instance?.Propulsion;
+            float t = (prop != null && !prop.IsPropulsionDisabled) ? prop.ThrottleInput : 0f;
+            float energy = Mathf.Lerp(1.0f, 4.5f, t); // 1.0 matches GLB's baked emissiveStrength floor
+            foreach (var mat in _engineGlowMaterials)
+                mat.EmissionEnergyMultiplier = energy;
+        }
     }
 
     // Called by CameraController when switching views. Hides the hull on
