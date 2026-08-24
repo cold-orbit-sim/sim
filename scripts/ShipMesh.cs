@@ -155,11 +155,23 @@ public partial class ShipMesh : Node3D
             return;
         }
 
+        // engine_core's mesh geometry is a flat disc (x/z span ~2.7, y span only 0.6,
+        // confirmed by inspecting the GLB's raw vertex data) — its face normal, i.e.
+        // the actual exhaust direction, is the node's local +Y axis, not +Z. EngineExhaust
+        // assumes its parent's local +Z is aft (true at the ship level per batch 17's
+        // invariant), so remap nozzle-local +Y onto exhaust-local +Z here: Rx(-90) sends
+        // local Z -> +Y, so composing xf with its inverse (Rx(+90) is its own use here as
+        // the *source* axis, applied before xf) makes the exhaust's +Z point where the
+        // nozzle's +Y actually points. (Root cause of the "sideways particles" bug in
+        // batch 22 — using the nozzle's Z axis directly pointed the plume 90° off, since
+        // the nozzle disc's real facing direction was always Y.)
+        var nozzleYToExhaustZ = new Transform3D(new Basis(Vector3.Right, Mathf.DegToRad(-90)), Vector3.Zero);
+
         foreach (var xf in nozzleTransforms)
         {
             var exhaust = new EngineExhaust();
             AddChild(exhaust);
-            exhaust.GlobalTransform = xf;
+            exhaust.GlobalTransform = xf * nozzleYToExhaustZ;
         }
     }
 
