@@ -57,6 +57,11 @@ public partial class EngineExhaust : Node3D
     [Export] public float GlowMarkerIdleEnergy = 0.5f;
     [Export] public float GlowMarkerMaxEnergy = 1.7f;
 
+    // Separate, slower rate specifically for the propulsion-disabled cooldown fade
+    // (half of ResponseRate = twice as long to settle, per feedback) — the normal
+    // throttle/turn response stays snappy since that was confirmed already right.
+    [Export] public float GlowCooldownRate = 1.5f;
+
     private GpuParticles3D _emberParticles;
     private ParticleProcessMaterial _emberProcMat;
     private GpuParticles3D _coreParticles;
@@ -81,14 +86,13 @@ public partial class EngineExhaust : Node3D
         _glowMarkerMesh = new SphereMesh { Radius = GlowMarkerRadius, Height = GlowMarkerRadius * 2f };
         _glowMarkerMat = new StandardMaterial3D
         {
-            // Same proven pattern as ShipMesh's hull heat-glow overlay (_glowMaterials):
-            // Unshaded + BlendMode Add + Transparency Alpha, brightness driven purely by
-            // AlbedoColor — no Emission involved. That system is confirmed working in
-            // this exact project; Emission's actual on-screen behavior here turned out
-            // to be unreliable, so this sidesteps it rather than keep chasing it.
+            // Unshaded + opaque (no blending): brightness driven purely by AlbedoColor,
+            // no Emission involved (unreliable in this project — see commit history).
+            // Deliberately NOT additive: additive rendering can't produce a genuinely
+            // "off" solid black sphere — zero color adds zero contribution, which reads
+            // as the marker vanishing/going transparent rather than going dark. Opaque
+            // means a black AlbedoColor still renders as a visible solid dark sphere.
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            BlendMode = BaseMaterial3D.BlendModeEnum.Add,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
             AlbedoColor = Colors.Black, // set per-frame from GlowMarkerColor * brightness
         };
         _glowMarkerMesh.Material = _glowMarkerMat;
@@ -250,11 +254,14 @@ public partial class EngineExhaust : Node3D
         _glowMarkerMesh.Radius = GlowMarkerRadius;
         _glowMarkerMesh.Height = GlowMarkerRadius * 2f;
 
-        // Brightness via additive AlbedoColor scaled by "energy", not Emission —
-        // same technique as ShipMesh's hull heat-glow (GlowColor()). Alpha stays 1
-        // so the full scaled color contributes each frame under Add blending.
+        // Brightness via plain AlbedoColor scaled by "energy", not Emission —
+        // see BuildGlowMarker for why this is opaque rather than additive.
         float targetGlow = fires ? Mathf.Lerp(GlowMarkerIdleEnergy, GlowMarkerMaxEnergy, throttle) : 0f;
-        _smoothedGlow = Mathf.Lerp(_smoothedGlow, targetGlow, k);
+        // Disabled propulsion cools down twice as slowly as a normal throttle/turn
+        // transition — same k formula, just a slower rate while not running.
+        float glowRate = running ? ResponseRate : GlowCooldownRate;
+        float glowK = 1f - Mathf.Exp(-glowRate * (float)delta);
+        _smoothedGlow = Mathf.Lerp(_smoothedGlow, targetGlow, glowK);
         _glowMarkerMat.AlbedoColor = new Color(
             GlowMarkerColor.R * _smoothedGlow,
             GlowMarkerColor.G * _smoothedGlow,
