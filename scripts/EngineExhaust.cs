@@ -80,19 +80,15 @@ public partial class EngineExhaust : Node3D
         _glowMarkerMesh = new SphereMesh { Radius = GlowMarkerRadius, Height = GlowMarkerRadius * 2f };
         _glowMarkerMat = new StandardMaterial3D
         {
+            // Same proven pattern as ShipMesh's hull heat-glow overlay (_glowMaterials):
+            // Unshaded + BlendMode Add + Transparency Alpha, brightness driven purely by
+            // AlbedoColor — no Emission involved. That system is confirmed working in
+            // this exact project; Emission's actual on-screen behavior here turned out
+            // to be unreliable, so this sidesteps it rather than keep chasing it.
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            // Black, not GlowMarkerColor: with Unshaded, AlbedoColor renders directly
-            // to screen regardless of emission. Setting it to the same bright orange
-            // as Emission (previous version) meant the sphere was always visibly
-            // orange from albedo alone — Energy changes were genuinely invisible
-            // because they were adding an undetectable amount on top of an already-
-            // fully-bright surface. This now matches engine_core's real material
-            // (near-black baseColorFactor), so Emission is the only thing driving
-            // visible brightness — an honest test of whether emission renders at all.
-            AlbedoColor = Colors.Black,
-            EmissionEnabled = true,
-            Emission = GlowMarkerColor,
-            EmissionEnergyMultiplier = 0f,
+            BlendMode = BaseMaterial3D.BlendModeEnum.Add,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            AlbedoColor = Colors.Black, // set per-frame from GlowMarkerColor * brightness
         };
         _glowMarkerMesh.Material = _glowMarkerMat;
 
@@ -252,8 +248,14 @@ public partial class EngineExhaust : Node3D
         _glowMarker.Position = GlowMarkerOffset;
         _glowMarkerMesh.Radius = GlowMarkerRadius;
         _glowMarkerMesh.Height = GlowMarkerRadius * 2f;
-        _glowMarkerMat.Emission = GlowMarkerColor;
 
-        _glowMarkerMat.EmissionEnergyMultiplier = GlowMarkerEnergy;
+        // Brightness via additive AlbedoColor scaled by "energy", not Emission —
+        // same technique as ShipMesh's hull heat-glow (GlowColor()). Alpha stays 1
+        // so the full scaled color contributes each frame under Add blending.
+        _glowMarkerMat.AlbedoColor = new Color(
+            GlowMarkerColor.R * GlowMarkerEnergy,
+            GlowMarkerColor.G * GlowMarkerEnergy,
+            GlowMarkerColor.B * GlowMarkerEnergy,
+            1f);
     }
 }
