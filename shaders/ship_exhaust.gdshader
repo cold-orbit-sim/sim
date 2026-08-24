@@ -41,9 +41,17 @@ void fragment() {
     // something closer to a wispy burn than a solid geometric shape.
     vec2 noise_uv = vec2(UV.x * 6.0, UV.y * 3.0 - TIME * 1.4);
     float n = value_noise(noise_uv) * 0.6 + value_noise(noise_uv * 2.3 + 10.0) * 0.4;
-    float breakup = mix(0.5, 1.0, n);
+    float breakup = mix(0.35, 1.0, n);
 
-    float alpha = fade * throttle * breakup;
+    // Fresnel-style silhouette fade: on a convex mesh, the geometric outline is
+    // exactly where the surface normal is perpendicular to the view direction
+    // (dot -> 0). Fading alpha out there is what actually kills the "obvious cone"
+    // look — noise alone only breaks up the interior, the hard edge of the mesh
+    // itself was still a crisp line without this.
+    float facing = abs(dot(normalize(NORMAL), normalize(VIEW)));
+    float edge_fade = smoothstep(0.0, 0.5, facing);
+
+    float alpha = fade * throttle * breakup * edge_fade;
 
     ALBEDO = col;
     ALPHA = clamp(alpha, 0.0, 1.0);

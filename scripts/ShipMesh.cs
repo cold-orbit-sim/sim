@@ -236,10 +236,22 @@ public partial class ShipMesh : Node3D
             if (node is not MeshInstance3D src || !src.Visible || src.Mesh == null)
                 continue;
 
+            // engine_core nozzles already get a dedicated throttle-driven glow material
+            // (see FindEngineGlowSurfaces below) — skip them here so the temperature
+            // overlay doesn't layer a second, conflicting glow on top of it.
+            if (src.Mesh is ArrayMesh srcAm && HasSurfaceNamed(srcAm, "engine_glow"))
+                continue;
+
             var mat = new StandardMaterial3D
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
                 BlendMode   = BaseMaterial3D.BlendModeEnum.Add,
+                // BlendMode only takes effect in the transparent pass — without this,
+                // the overlay renders as solid opaque black and occludes whatever it's
+                // wrapped around. Confirmed as the cause of the engine nozzle glow being
+                // completely invisible: this 1.002x-scaled opaque black disc sat directly
+                // in front of engine_core's actual emissive surface.
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
                 CullMode    = BaseMaterial3D.CullModeEnum.Disabled,
                 AlbedoColor = Colors.Black,
             };
@@ -256,6 +268,14 @@ public partial class ShipMesh : Node3D
             src.GetParent().AddChild(glow);
             _glowMaterials.Add(mat);
         }
+    }
+
+    private static bool HasSurfaceNamed(ArrayMesh mesh, string name)
+    {
+        for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+            if (mesh.SurfaceGetName(s) == name)
+                return true;
+        return false;
     }
 
     public override void _Process(double delta)

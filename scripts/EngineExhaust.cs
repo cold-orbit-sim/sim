@@ -41,8 +41,14 @@ public partial class EngineExhaust : Node3D
             TopRadius = 0.05f,
             BottomRadius = MaxPlumeRadius,
             Height = MaxPlumeLength,
-            RadialSegments = 12,
-            Rings = 1
+            RadialSegments = 20,
+            Rings = 1,
+            // No end caps — a capped cone reads as a solid opaque object, especially
+            // the flat wide "tip" cap facing the camera. Leaving it open lets the
+            // shader's own alpha falloff (fore-to-aft, plus the Fresnel edge fade)
+            // be the only thing defining the shape, instead of a flat hard-edged disc.
+            CapTop = false,
+            CapBottom = false
         };
 
         _plumeCore = new MeshInstance3D { Mesh = cyl };
