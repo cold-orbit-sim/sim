@@ -23,7 +23,11 @@ public partial class ShipMesh : Node3D
     private readonly List<StandardMaterial3D> _glowMaterials = new();
 
     // Duplicated engine_glow materials (one per nozzle), brightened with throttle.
-    private readonly List<StandardMaterial3D> _engineGlowMaterials = new();
+    // BaseMaterial3D (not StandardMaterial3D) because the GLB-imported material's
+    // exact subtype isn't guaranteed — narrowing to StandardMaterial3D silently
+    // dropped every nozzle from this list even though the same surface lookup
+    // correctly finds the nozzle transforms for exhaust placement.
+    private readonly List<BaseMaterial3D> _engineGlowMaterials = new();
 
     // How fast the nozzle glow eases toward its target brightness, in 1/s. Shared by
     // spool-up and the fade-to-off on disable, so cutting propulsion reads as the
@@ -198,16 +202,25 @@ public partial class ShipMesh : Node3D
             {
                 if (am.SurfaceGetName(s) != "engine_glow") continue;
 
-                // Duplicate before mutating — StandardMaterial3D from a GLB import is a
-                // shared resource; setting properties on it directly would affect every
+                // Duplicate before mutating — a GLB-imported material is a shared
+                // resource; setting properties on it directly would affect every
                 // instance of this mesh, not just this ship (same caution as the hull
                 // weathering pass above).
                 var mat = mi.GetActiveMaterial(s);
-                if (mat is StandardMaterial3D std)
+                if (mat is BaseMaterial3D std)
                 {
-                    var unique = (StandardMaterial3D)std.Duplicate();
+                    var unique = (BaseMaterial3D)std.Duplicate();
+                    // Set emission ourselves rather than trusting the GLB's
+                    // KHR_materials_emissive_strength import to have come through —
+                    // makes the throttle-driven glow self-contained either way.
+                    unique.EmissionEnabled = true;
+                    unique.Emission = new Color(1.0f, 0.45f, 0.12f);
                     mi.SetSurfaceOverrideMaterial(s, unique);
                     _engineGlowMaterials.Add(unique);
+                }
+                else
+                {
+                    GD.PrintErr($"ShipMesh: engine_glow surface material is {mat?.GetType().Name ?? "null"}, not a BaseMaterial3D — nozzle glow not wired for this surface");
                 }
 
                 // Each engine_glow-surfaced mesh in cruiser.glb (engine_core x3) is its

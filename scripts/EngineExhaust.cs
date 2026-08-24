@@ -15,6 +15,15 @@ public partial class EngineExhaust : Node3D
     [Export] public float ParticleBaseSpeed = 40f;
     [Export] public float ParticleMaxSpeedBoost = 160f;
 
+    // Dense "core flame" particles — a second, much busier emitter packed tight
+    // against the nozzle. The translucent shader plume alone reads as a thin
+    // membrane; overlapping additive particles is what actually sells a "cone of
+    // flame" without faking atmosphere — still zero gravity/drag, still straight
+    // lines, still vacuum-correct, just a lot more of them close to the nozzle.
+    [Export] public int MaxCoreParticles = 160;
+    [Export] public float CoreParticleBaseSpeed = 22f;
+    [Export] public float CoreParticleMaxSpeedBoost = 70f;
+
     // How fast the plume/particles/glow ease toward their target level, in 1/s
     // (higher = snappier). Shared by spool-up and spool-down so a throttle cut
     // or a propulsion-disable both decay naturally instead of snapping to zero.
@@ -24,14 +33,18 @@ public partial class EngineExhaust : Node3D
     private ShaderMaterial _plumeMat;
     private GpuParticles3D _emberParticles;
     private ParticleProcessMaterial _emberProcMat;
+    private GpuParticles3D _coreParticles;
+    private ParticleProcessMaterial _coreProcMat;
 
     private float _smoothedPlume;
     private float _smoothedParticle;
+    private float _smoothedCore;
 
     public override void _Ready()
     {
         BuildPlumeCore();
         BuildEmberParticles();
+        BuildCoreParticles();
     }
 
     private void BuildPlumeCore()
@@ -116,6 +129,54 @@ public partial class EngineExhaust : Node3D
         AddChild(_emberParticles);
     }
 
+    private void BuildCoreParticles()
+    {
+        _coreParticles = new GpuParticles3D
+        {
+            Amount = MaxCoreParticles,
+            Lifetime = 0.45,   // short — these fill the near-nozzle region densely, not a trail
+            Emitting = true,
+            Position = Vector3.Zero
+        };
+
+        var mesh = new SphereMesh { Radius = 0.22f, Height = 0.44f, RadialSegments = 6, Rings = 3 };
+        _coreParticles.DrawPass1 = mesh;
+
+        _coreProcMat = new ParticleProcessMaterial
+        {
+            Direction = new Vector3(0, 0, 1),
+            Spread = 6f,                          // tight — keeps the cone shape instead of a spray
+            Gravity = Vector3.Zero,                // VACUUM — same invariant as the ember emitter
+            InitialVelocityMin = CoreParticleBaseSpeed,
+            InitialVelocityMax = CoreParticleBaseSpeed + CoreParticleMaxSpeedBoost,
+            ScaleMin = 0.8f,
+            ScaleMax = 1.6f,
+            EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 0.15f
+        };
+
+        var ramp = new Gradient();
+        ramp.SetColor(0, new Color(1.0f, 1.0f, 0.9f, 1.0f));
+        ramp.AddPoint(0.3f, new Color(1.0f, 0.6f, 0.2f, 0.9f));
+        ramp.AddPoint(1.0f, new Color(0.5f, 0.1f, 0.02f, 0.0f));
+        var rampTex = new GradientTexture1D { Gradient = ramp };
+        _coreProcMat.ColorRamp = rampTex;
+
+        var mat = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BlendMode = BaseMaterial3D.BlendModeEnum.Add,
+            VertexColorUseAsAlbedo = true
+        };
+        mesh.Material = mat;
+
+        _coreParticles.ProcessMaterial = _coreProcMat;
+        _coreParticles.AmountRatio = 0f;
+
+        AddChild(_coreParticles);
+    }
+
     public override void _Process(double delta)
     {
         var prop = SimBus.Instance?.Propulsion;
@@ -135,10 +196,14 @@ public partial class EngineExhaust : Node3D
         // that read as a fade instead of a snap.
         float targetPlume = running ? Mathf.Max(throttle, IdlePlumeFraction) : 0f;
         float targetParticle = running ? Mathf.Max(throttle * 1.1f, IdleParticleFraction) : 0f;
+        // No idle floor for the dense core particles — they're the "under real thrust"
+        // cue, distinct from the sparse idle ember trickle. Zero at throttle=0.
+        float targetCore = running ? throttle : 0f;
 
         float k = 1f - Mathf.Exp(-ResponseRate * (float)delta);
         _smoothedPlume = Mathf.Lerp(_smoothedPlume, targetPlume, k);
         _smoothedParticle = Mathf.Lerp(_smoothedParticle, targetParticle, k);
+        _smoothedCore = Mathf.Lerp(_smoothedCore, targetCore, k);
 
         _plumeMat.SetShaderParameter("throttle", _smoothedPlume);
         _plumeMat.SetShaderParameter("heat", mix);
@@ -153,5 +218,9 @@ public partial class EngineExhaust : Node3D
         _emberParticles.AmountRatio = Mathf.Clamp(_smoothedParticle, 0f, 1f);
         _emberProcMat.InitialVelocityMin = ParticleBaseSpeed * (0.5f + 0.5f * _smoothedPlume);
         _emberProcMat.InitialVelocityMax = _emberProcMat.InitialVelocityMin + ParticleMaxSpeedBoost * _smoothedPlume;
+
+        _coreParticles.AmountRatio = Mathf.Clamp(_smoothedCore, 0f, 1f);
+        _coreProcMat.InitialVelocityMin = CoreParticleBaseSpeed * (0.5f + 0.5f * _smoothedCore);
+        _coreProcMat.InitialVelocityMax = _coreProcMat.InitialVelocityMin + CoreParticleMaxSpeedBoost * _smoothedCore;
     }
 }
