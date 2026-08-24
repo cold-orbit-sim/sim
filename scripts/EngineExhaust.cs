@@ -83,7 +83,15 @@ public partial class EngineExhaust : Node3D
         _glowMarkerMat = new StandardMaterial3D
         {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            AlbedoColor = GlowMarkerColor,
+            // Black, not GlowMarkerColor: with Unshaded, AlbedoColor renders directly
+            // to screen regardless of emission. Setting it to the same bright orange
+            // as Emission (previous version) meant the sphere was always visibly
+            // orange from albedo alone — Energy changes were genuinely invisible
+            // because they were adding an undetectable amount on top of an already-
+            // fully-bright surface. This now matches engine_core's real material
+            // (near-black baseColorFactor), so Emission is the only thing driving
+            // visible brightness — an honest test of whether emission renders at all.
+            AlbedoColor = Colors.Black,
             EmissionEnabled = true,
             Emission = GlowMarkerColor,
             EmissionEnergyMultiplier = 0f,
@@ -246,7 +254,6 @@ public partial class EngineExhaust : Node3D
         _glowMarker.Position = GlowMarkerOffset;
         _glowMarkerMesh.Radius = GlowMarkerRadius;
         _glowMarkerMesh.Height = GlowMarkerRadius * 2f;
-        _glowMarkerMat.AlbedoColor = GlowMarkerColor;
         _glowMarkerMat.Emission = GlowMarkerColor;
 
         _glowMarkerMat.EmissionEnergyMultiplier = GlowMarkerEnergy;
