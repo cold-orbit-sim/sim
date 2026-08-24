@@ -256,7 +256,13 @@ public partial class EngineExhaust : Node3D
 
         // Brightness via plain AlbedoColor scaled by "energy", not Emission —
         // see BuildGlowMarker for why this is opaque rather than additive.
-        float targetGlow = fires ? Mathf.Lerp(GlowMarkerIdleEnergy, GlowMarkerMaxEnergy, throttle) : 0f;
+        // Unlike the particles, a nozzle suppressed only by turn-side mismatch (not
+        // disabled, not reversing) still glows at idle — it's not firing, but it's
+        // not dead either. Only disabled/reverse actually go dark.
+        bool disabledOrReverse = !running || prop.ReverseEnabled;
+        float targetGlow = disabledOrReverse ? 0f
+                          : !fires ? GlowMarkerIdleEnergy
+                          : Mathf.Lerp(GlowMarkerIdleEnergy, GlowMarkerMaxEnergy, throttle);
         // Any cooldown — throttling down or propulsion going disabled — settles at
         // half the rate (twice as slow) as spooling up, which stays snappy.
         bool coolingDown = targetGlow < _smoothedGlow;
