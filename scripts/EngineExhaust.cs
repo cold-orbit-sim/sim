@@ -257,9 +257,10 @@ public partial class EngineExhaust : Node3D
         // Brightness via plain AlbedoColor scaled by "energy", not Emission —
         // see BuildGlowMarker for why this is opaque rather than additive.
         float targetGlow = fires ? Mathf.Lerp(GlowMarkerIdleEnergy, GlowMarkerMaxEnergy, throttle) : 0f;
-        // Disabled propulsion cools down twice as slowly as a normal throttle/turn
-        // transition — same k formula, just a slower rate while not running.
-        float glowRate = running ? ResponseRate : GlowCooldownRate;
+        // Any cooldown — throttling down or propulsion going disabled — settles at
+        // half the rate (twice as slow) as spooling up, which stays snappy.
+        bool coolingDown = targetGlow < _smoothedGlow;
+        float glowRate = coolingDown ? GlowCooldownRate : ResponseRate;
         float glowK = 1f - Mathf.Exp(-glowRate * (float)delta);
         _smoothedGlow = Mathf.Lerp(_smoothedGlow, targetGlow, glowK);
         _glowMarkerMat.AlbedoColor = new Color(
