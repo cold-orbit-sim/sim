@@ -40,47 +40,58 @@ public partial class EngineExhaust : Node3D
     // propulsion-disable all decay naturally instead of snapping to zero.
     [Export] public float ResponseRate = 3f;
 
+    // Nozzle glow marker — a standalone bright sphere, NOT part of the GLB mesh
+    // chain. engine_core's own emissive disc is confirmed unreachable from normal
+    // viewing angles (proved via a debug marker placed 20m clear of the hull —
+    // still visible there, so the material system was never the problem; the
+    // disc itself is geometrically blocked, likely recessed inside engine_nozzle).
+    // This marker is the permanent replacement. All four fields are tunable live
+    // in the Remote Inspector during Play — report back whatever values look
+    // right and they'll get baked in as the new defaults.
+    [Export] public Vector3 GlowMarkerOffset = new Vector3(0, 0, 1.5f);
+    [Export] public float GlowMarkerRadius = 0.5f;
+    [Export] public Color GlowMarkerColor = new Color(1.0f, 0.45f, 0.12f);
+    [Export] public float GlowMarkerIdleEnergy = 1.0f;
+    [Export] public float GlowMarkerMaxEnergy = 6.0f;
+
     private GpuParticles3D _emberParticles;
     private ParticleProcessMaterial _emberProcMat;
     private GpuParticles3D _coreParticles;
     private ParticleProcessMaterial _coreProcMat;
+    private MeshInstance3D _glowMarker;
+    private SphereMesh _glowMarkerMesh;
+    private StandardMaterial3D _glowMarkerMat;
 
     private float _smoothedParticle;
     private float _smoothedCore;
+    private float _smoothedGlow;
 
     public override void _Ready()
     {
         BuildEmberParticles();
         BuildCoreParticles();
-        BuildDebugGlowMarker();
+        BuildGlowMarker();
     }
 
-    // TEMPORARY diagnostic — a plain bright sphere floating well clear of the hull
-    // (20m aft, past all the particle activity), using a fresh material completely
-    // unrelated to the GLB import chain. If this doesn't glow either, the problem is
-    // something scene/renderer-wide, not specific to engine_core's material or
-    // position. If it DOES glow, engine_core's own disc is being blocked by
-    // something geometric (recessed inside the nozzle bell, hull overlap, etc.) and
-    // the fix is positional, not a material bug at all. Remove once diagnosed.
-    private void BuildDebugGlowMarker()
+    private void BuildGlowMarker()
     {
-        var mesh = new SphereMesh { Radius = 1.0f, Height = 2.0f };
-        var mat = new StandardMaterial3D
+        _glowMarkerMesh = new SphereMesh { Radius = GlowMarkerRadius, Height = GlowMarkerRadius * 2f };
+        _glowMarkerMat = new StandardMaterial3D
         {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            AlbedoColor = new Color(1.0f, 0.45f, 0.12f),
+            AlbedoColor = GlowMarkerColor,
             EmissionEnabled = true,
-            Emission = new Color(1.0f, 0.45f, 0.12f),
-            EmissionEnergyMultiplier = 6.0f,
+            Emission = GlowMarkerColor,
+            EmissionEnergyMultiplier = 0f,
         };
-        mesh.Material = mat;
+        _glowMarkerMesh.Material = _glowMarkerMat;
 
-        var marker = new MeshInstance3D
+        _glowMarker = new MeshInstance3D
         {
-            Mesh = mesh,
-            Position = new Vector3(0, 0, 20f)
+            Mesh = _glowMarkerMesh,
+            Position = GlowMarkerOffset
         };
-        AddChild(marker);
+        AddChild(_glowMarker);
     }
 
     private void BuildEmberParticles()
@@ -225,5 +236,17 @@ public partial class EngineExhaust : Node3D
         _coreParticles.AmountRatio = Mathf.Clamp(_smoothedCore, 0f, 1f);
         _coreProcMat.InitialVelocityMin = CoreParticleBaseSpeed * (0.5f + 0.5f * _smoothedCore);
         _coreProcMat.InitialVelocityMax = _coreProcMat.InitialVelocityMin + CoreParticleMaxSpeedBoost * _smoothedCore;
+
+        // Re-applied every frame (not just at _Ready) so edits to the Export fields
+        // above show up live while dialing the marker in via the Remote Inspector.
+        _glowMarker.Position = GlowMarkerOffset;
+        _glowMarkerMesh.Radius = GlowMarkerRadius;
+        _glowMarkerMesh.Height = GlowMarkerRadius * 2f;
+        _glowMarkerMat.AlbedoColor = GlowMarkerColor;
+        _glowMarkerMat.Emission = GlowMarkerColor;
+
+        float targetGlow = fires ? Mathf.Lerp(GlowMarkerIdleEnergy, GlowMarkerMaxEnergy, throttle) : 0f;
+        _smoothedGlow = Mathf.Lerp(_smoothedGlow, targetGlow, k);
+        _glowMarkerMat.EmissionEnergyMultiplier = _smoothedGlow;
     }
 }
