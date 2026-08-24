@@ -22,19 +22,21 @@ public partial class ShipMesh : Node3D
     // One material per glow overlay; updated each _Process frame.
     private readonly List<StandardMaterial3D> _glowMaterials = new();
 
-    // Duplicated engine_glow materials (one per nozzle), brightened with throttle.
-    // BaseMaterial3D (not StandardMaterial3D) because the GLB-imported material's
-    // exact subtype isn't guaranteed — narrowing to StandardMaterial3D silently
-    // dropped every nozzle from this list even though the same surface lookup
-    // correctly finds the nozzle transforms for exhaust placement.
-    private readonly List<BaseMaterial3D> _engineGlowMaterials = new();
+    // One entry per nozzle's duplicated engine_glow material, each with its own
+    // smoothed brightness so a differential turn (see EngineExhaust) makes only
+    // the firing nozzle glow, not all three uniformly.
+    private sealed class EngineGlowEntry
+    {
+        public BaseMaterial3D Material;
+        public EngineSide Side;
+        public float Energy;
+    }
+    private readonly List<EngineGlowEntry> _engineGlowEntries = new();
 
     // How fast the nozzle glow eases toward its target brightness, in 1/s. Shared by
     // spool-up and the fade-to-off on disable, so cutting propulsion reads as the
     // glow dying down naturally rather than snapping off.
     [Export] public float EngineGlowResponseRate = 2.5f;
-
-    private float _engineGlowEnergy;
 
     public override void _Ready()
     {
@@ -150,17 +152,17 @@ public partial class ShipMesh : Node3D
             ApplyHullRecursive(child, hull, dark, trim, etch, stripe);
     }
 
-    // Spawns an EngineExhaust node (plume + ember particles) at each engine_glow
-    // nozzle surface, and gives each nozzle its own mutable emissive material so
-    // brightness can be driven per-frame without touching the shared GLB resource.
+    // Spawns an EngineExhaust node (particles) at each engine_glow nozzle surface,
+    // and gives each nozzle its own mutable emissive material so brightness can be
+    // driven per-frame without touching the shared GLB resource.
     private void ApplyEngineExhaustEffects()
     {
         if (!ApplyEngineExhaust) return;
 
-        var nozzleTransforms = new List<Transform3D>();
-        FindEngineGlowSurfaces(this, nozzleTransforms);
+        var nozzles = new List<(Transform3D xf, EngineSide side)>();
+        FindEngineGlowSurfaces(this, nozzles);
 
-        if (nozzleTransforms.Count == 0)
+        if (nozzles.Count == 0)
         {
             GD.PrintErr("ShipMesh: no engine_glow surfaces found — exhaust effects not spawned");
             return;
@@ -178,9 +180,9 @@ public partial class ShipMesh : Node3D
         // the nozzle disc's real facing direction was always Y.)
         var nozzleYToExhaustZ = new Transform3D(new Basis(Vector3.Right, Mathf.DegToRad(-90)), Vector3.Zero);
 
-        foreach (var xf in nozzleTransforms)
+        foreach (var (xf, side) in nozzles)
         {
-            var exhaust = new EngineExhaust();
+            var exhaust = new EngineExhaust { Side = side };
             AddChild(exhaust);
             exhaust.GlobalTransform = xf * nozzleYToExhaustZ;
         }
@@ -191,7 +193,7 @@ public partial class ShipMesh : Node3D
     // quirk in the source asset, confirmed by inspecting the GLB JSON directly) —
     // matching by material name alone would spawn a spurious plume at the bridge
     // dome, so bridge nodes are excluded explicitly (reusing BridgeNodes).
-    private void FindEngineGlowSurfaces(Node node, List<Transform3D> transforms)
+    private void FindEngineGlowSurfaces(Node node, List<(Transform3D xf, EngineSide side)> nozzles)
     {
         if (System.Array.IndexOf(BridgeNodes, node.Name.ToString()) >= 0)
             return;
@@ -206,6 +208,17 @@ public partial class ShipMesh : Node3D
                 // resource; setting properties on it directly would affect every
                 // instance of this mesh, not just this ship (same caution as the hull
                 // weathering pass above).
+                // Side (Left/Center/Right) determined from the nozzle's position in
+                // ShipMesh's own local frame — z<0 = Left, z>0 = Right, per the raw
+                // GLB node translations (engine_core z=-4, engine_core2 z=0,
+                // engine_core3 z=+4) and a standard right-handed forward=+X/up=+Y
+                // convention (right = forward × up = +Z). UNVERIFIED in-editor —
+                // confirm left/right actually match visually.
+                Vector3 localPos = GlobalTransform.AffineInverse() * mi.GlobalPosition;
+                EngineSide side = localPos.Z < -0.5f ? EngineSide.Left
+                                 : localPos.Z > 0.5f  ? EngineSide.Right
+                                 : EngineSide.Center;
+
                 var mat = mi.GetActiveMaterial(s);
                 if (mat is BaseMaterial3D std)
                 {
@@ -224,27 +237,19 @@ public partial class ShipMesh : Node3D
                     // any emission setting. Costs nothing on three small discs.
                     unique.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
                     mi.SetSurfaceOverrideMaterial(s, unique);
-                    _engineGlowMaterials.Add(unique);
+                    _engineGlowEntries.Add(new EngineGlowEntry { Material = unique, Side = side });
                 }
                 else
                 {
                     GD.PrintErr($"ShipMesh: engine_glow surface material is {mat?.GetType().Name ?? "null"}, not a BaseMaterial3D — nozzle glow not wired for this surface");
                 }
-                GD.Print($"ShipMesh: engine_glow surface found on '{mi.Name}' (material type: {mat?.GetType().Name ?? "null"})");
 
-                // Each engine_glow-surfaced mesh in cruiser.glb (engine_core x3) is its
-                // own small node, confirmed against the GLB's node list — but the node
-                // carries its own baked local rotation (a -90° Z rotation in the source
-                // matrix), independent of the ship's ModelRotationDeg. Using the node's
-                // own GlobalTransform (not just its position) is load-bearing: reusing
-                // ShipMesh's basis instead dropped that local rotation and sent the
-                // plume 90° off (caught in play-test after batch 22).
-                transforms.Add(mi.GlobalTransform);
+                nozzles.Add((mi.GlobalTransform, side));
             }
         }
 
         foreach (Node child in node.GetChildren())
-            FindEngineGlowSurfaces(child, transforms);
+            FindEngineGlowSurfaces(child, nozzles);
     }
 
     // Creates one additive glow MeshInstance3D (sibling) per visible GLB mesh.
@@ -310,23 +315,38 @@ public partial class ShipMesh : Node3D
                 mat.AlbedoColor = glow;
         }
 
-        if (_engineGlowMaterials.Count > 0)
+        if (_engineGlowEntries.Count > 0)
         {
             var prop = SimBus.Instance?.Propulsion;
             bool running = prop != null && !prop.IsPropulsionDisabled;
-
-            // Slight orange glow at idle, brightening toward the throttle-driven peak;
-            // zero (fully off) is the target the instant propulsion is disabled — the
-            // smoothing below turns that into a natural fade rather than a hard cut.
-            // NOTE: "unarmed" per user feedback maps to IsPropulsionDisabled — Propulsion
-            // has no separate Armed flag (see EngineExhaust.cs / batch 22 handback).
-            float targetEnergy = running ? Mathf.Lerp(0.6f, 4.5f, prop.ThrottleInput) : 0f;
+            // Same firing gate as EngineExhaust._Process: nothing during reverse, only
+            // the opposite-side nozzle during an active turn, so the glow matches which
+            // nozzle is actually shown firing rather than all three brightening uniformly.
+            bool fires = running && prop != null && !prop.ReverseEnabled;
+            bool yawing = fires && (prop.YawLeftActive || prop.YawRightActive);
 
             float k = 1f - Mathf.Exp(-EngineGlowResponseRate * (float)delta);
-            _engineGlowEnergy = Mathf.Lerp(_engineGlowEnergy, targetEnergy, k);
 
-            foreach (var mat in _engineGlowMaterials)
-                mat.EmissionEnergyMultiplier = _engineGlowEnergy;
+            foreach (var entry in _engineGlowEntries)
+            {
+                bool entryFires = fires;
+                float throttle = fires ? prop.ThrottleInput : 0f;
+                if (yawing)
+                {
+                    entryFires = (prop.YawLeftActive && entry.Side == EngineSide.Right)
+                              || (prop.YawRightActive && entry.Side == EngineSide.Left);
+                    if (entryFires) throttle = Mathf.Max(throttle, 0.6f);
+                }
+
+                // Slight orange glow at idle, brightening toward the throttle-driven peak;
+                // zero (fully off) is the target when not firing — the smoothing below
+                // turns that into a natural fade rather than a hard cut. NOTE: "unarmed"
+                // per user feedback maps to IsPropulsionDisabled — Propulsion has no
+                // separate Armed flag (see EngineExhaust.cs / batch 22 handback).
+                float targetEnergy = entryFires ? Mathf.Lerp(0.6f, 4.5f, throttle) : 0f;
+                entry.Energy = Mathf.Lerp(entry.Energy, targetEnergy, k);
+                entry.Material.EmissionEnergyMultiplier = entry.Energy;
+            }
         }
     }
 

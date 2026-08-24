@@ -2,83 +2,56 @@ using Godot;
 
 namespace ColdOrbit.SimCore;
 
-// Vacuum-correct exhaust plume + ember particles at one engine nozzle.
-// Driven by SimBus.Instance.Propulsion telemetry (global throttle/mix — see
-// batch 22 handback for why per-engine differential isn't wired yet).
+// Which side of the ship this nozzle is on, used for differential firing during
+// a turn (see _Process). Determined by ShipMesh from nozzle geometry at spawn
+// time — Center never differential-fires, only suppresses/resumes with the ship.
+public enum EngineSide { Left, Center, Right }
+
+// Vacuum-correct exhaust particles at one engine nozzle: a sparse idle ember
+// trickle plus a dense, tight-spread "core flame" cluster that reads as a cone
+// under real thrust. Driven by SimBus.Instance.Propulsion telemetry (global
+// throttle/mix — see batch 22 handback for why per-engine differential thrust
+// itself isn't wired; this only differentiates which nozzles are *shown*
+// firing, not the underlying physics).
 public partial class EngineExhaust : Node3D
 {
-    [Export] public float MaxPlumeLength = 14f;
-    [Export] public float MaxPlumeRadius = 1.6f;
-    [Export] public float IdlePlumeFraction = 0.12f;       // plume visible even at throttle=0 — "engine running" cue
-    [Export] public float IdleParticleFraction = 0.03f;    // ~25% of the old idle particle density (was 0.12*1.1)
+    [Export] public EngineSide Side = EngineSide.Center;
+
+    [Export] public float IdleParticleFraction = 0.03f;    // sparse idle ember trickle, even at throttle=0
     [Export] public int MaxParticles = 48;
     [Export] public float ParticleBaseSpeed = 40f;
     [Export] public float ParticleMaxSpeedBoost = 160f;
 
     // Dense "core flame" particles — a second, much busier emitter packed tight
-    // against the nozzle. The translucent shader plume alone reads as a thin
-    // membrane; overlapping additive particles is what actually sells a "cone of
-    // flame" without faking atmosphere — still zero gravity/drag, still straight
-    // lines, still vacuum-correct, just a lot more of them close to the nozzle.
+    // against the nozzle. Overlapping additive particles is what sells a "cone of
+    // flame" — still zero gravity/drag, still straight lines, still vacuum-correct,
+    // just a lot more of them close to the nozzle.
     [Export] public int MaxCoreParticles = 160;
     [Export] public float CoreParticleBaseSpeed = 22f;
     [Export] public float CoreParticleMaxSpeedBoost = 70f;
 
-    // How fast the plume/particles/glow ease toward their target level, in 1/s
-    // (higher = snappier). Shared by spool-up and spool-down so a throttle cut
-    // or a propulsion-disable both decay naturally instead of snapping to zero.
+    // While actively yawing, the firing-side nozzle shows at least this much
+    // throttle so the turn reads visually even if linear throttle is at zero
+    // (pure rotate-in-place).
+    [Export] public float YawFireLevel = 0.6f;
+
+    // How fast particles ease toward their target level, in 1/s (higher = snappier).
+    // Shared by spool-up and spool-down so a throttle cut, a yaw release, or a
+    // propulsion-disable all decay naturally instead of snapping to zero.
     [Export] public float ResponseRate = 3f;
 
-    private MeshInstance3D _plumeCore;
-    private ShaderMaterial _plumeMat;
     private GpuParticles3D _emberParticles;
     private ParticleProcessMaterial _emberProcMat;
     private GpuParticles3D _coreParticles;
     private ParticleProcessMaterial _coreProcMat;
 
-    private float _smoothedPlume;
     private float _smoothedParticle;
     private float _smoothedCore;
 
     public override void _Ready()
     {
-        BuildPlumeCore();
         BuildEmberParticles();
         BuildCoreParticles();
-    }
-
-    private void BuildPlumeCore()
-    {
-        var cyl = new CylinderMesh
-        {
-            TopRadius = 0.05f,
-            BottomRadius = MaxPlumeRadius,
-            Height = MaxPlumeLength,
-            RadialSegments = 20,
-            Rings = 1,
-            // No end caps — a capped cone reads as a solid opaque object, especially
-            // the flat wide "tip" cap facing the camera. Leaving it open lets the
-            // shader's own alpha falloff (fore-to-aft, plus the Fresnel edge fade)
-            // be the only thing defining the shape, instead of a flat hard-edged disc.
-            CapTop = false,
-            CapBottom = false
-        };
-
-        _plumeCore = new MeshInstance3D { Mesh = cyl };
-
-        // Orient the cylinder's height axis (local Y) onto local +Z (aft, nozzles face
-        // aft per batch 17). Rotating -90 about X sends +Y -> -Z, -Y -> +Z, so the wide
-        // "bottom" end lands aft. Translating +Height/2 along Z pulls the narrow "top"
-        // end back to the nozzle mount point (local origin).
-        // CONFIRM in-editor: if the plume points the wrong way, flip the rotation sign.
-        _plumeCore.RotationDegrees = new Vector3(-90, 0, 0);
-        _plumeCore.Position = new Vector3(0, 0, MaxPlumeLength / 2f);
-
-        var shader = GD.Load<Shader>("res://shaders/ship_exhaust.gdshader");
-        _plumeMat = new ShaderMaterial { Shader = shader };
-        _plumeCore.MaterialOverride = _plumeMat;
-
-        AddChild(_plumeCore);
     }
 
     private void BuildEmberParticles()
@@ -186,38 +159,39 @@ public partial class EngineExhaust : Node3D
         // engines have no arm/disarm state, so "unarmed" here means IsPropulsionDisabled.
         // See batch 22 handback for the field-name deviation from the handover spec.
         bool running = !prop.IsPropulsionDisabled;
-        float throttle = running ? prop.ThrottleInput : 0f;
-        float mix = prop.PropellantMix; // 0 = Economy, 1 = Power
 
-        // Idle floors: a faint running plume/particle trickle even at throttle=0, so
-        // "engine on" reads visually — but the two floors are independent (particles
-        // want to be much sparser than the plume looks at idle). Both targets fall to
-        // zero the instant the engine is disabled; the smoothing below is what makes
-        // that read as a fade instead of a snap.
-        float targetPlume = running ? Mathf.Max(throttle, IdlePlumeFraction) : 0f;
-        float targetParticle = running ? Mathf.Max(throttle * 1.1f, IdleParticleFraction) : 0f;
-        // No idle floor for the dense core particles — they're the "under real thrust"
-        // cue, distinct from the sparse idle ember trickle. Zero at throttle=0.
-        float targetCore = running ? throttle : 0f;
+        // Reverse has no modeled nozzles firing forward, so nothing fires at all —
+        // per feedback. Yawing fires only the nozzle on the side opposite the turn
+        // (turning left -> right nozzle fires) so the ship visually pivots off that
+        // one engine; the other nozzles go fully silent, not just dimmer. Neither
+        // gate reflects real per-engine differential thrust in the physics (still
+        // global throttle there, per the known gap) — this is a visual-only cue.
+        bool fires = running && !prop.ReverseEnabled;
+        float throttle = prop.ThrottleInput;
+
+        if (fires && (prop.YawLeftActive || prop.YawRightActive))
+        {
+            bool shouldFire = (prop.YawLeftActive && Side == EngineSide.Right)
+                            || (prop.YawRightActive && Side == EngineSide.Left);
+            fires = shouldFire;
+            if (shouldFire)
+                throttle = Mathf.Max(throttle, YawFireLevel);
+        }
+
+        if (!fires) throttle = 0f;
+
+        float targetParticle = fires ? Mathf.Max(throttle * 1.1f, IdleParticleFraction) : 0f;
+        float targetCore = fires ? throttle : 0f;
 
         float k = 1f - Mathf.Exp(-ResponseRate * (float)delta);
-        _smoothedPlume = Mathf.Lerp(_smoothedPlume, targetPlume, k);
         _smoothedParticle = Mathf.Lerp(_smoothedParticle, targetParticle, k);
         _smoothedCore = Mathf.Lerp(_smoothedCore, targetCore, k);
-
-        _plumeMat.SetShaderParameter("throttle", _smoothedPlume);
-        _plumeMat.SetShaderParameter("heat", mix);
-
-        // Plume geometry scales with throttle — longer, fatter burn at higher throttle.
-        float lengthScale = Mathf.Lerp(0.35f, 1.0f, _smoothedPlume);
-        float radiusScale = Mathf.Lerp(0.4f, 1.0f, _smoothedPlume);
-        _plumeCore.Scale = new Vector3(radiusScale, radiusScale, lengthScale);
 
         // Particle density and speed scale with throttle. AmountRatio is the cheap way
         // to vary visible particle count without rebuilding the GPU particle system.
         _emberParticles.AmountRatio = Mathf.Clamp(_smoothedParticle, 0f, 1f);
-        _emberProcMat.InitialVelocityMin = ParticleBaseSpeed * (0.5f + 0.5f * _smoothedPlume);
-        _emberProcMat.InitialVelocityMax = _emberProcMat.InitialVelocityMin + ParticleMaxSpeedBoost * _smoothedPlume;
+        _emberProcMat.InitialVelocityMin = ParticleBaseSpeed * (0.5f + 0.5f * _smoothedParticle);
+        _emberProcMat.InitialVelocityMax = _emberProcMat.InitialVelocityMin + ParticleMaxSpeedBoost * _smoothedParticle;
 
         _coreParticles.AmountRatio = Mathf.Clamp(_smoothedCore, 0f, 1f);
         _coreProcMat.InitialVelocityMin = CoreParticleBaseSpeed * (0.5f + 0.5f * _smoothedCore);

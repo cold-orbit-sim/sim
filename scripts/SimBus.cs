@@ -1085,6 +1085,13 @@ public partial class SimBus : Node
         public float ThrottleInput { get; private set; }  // 0–1, abs of current thrust axis
         public bool ReverseEnabled { get; private set; }  // true while reverse input is active
 
+        // True while the pilot is actively holding yaw_left / yaw_right this frame.
+        // Written by PlayerShip.HandleRotation; read by EngineExhaust for the
+        // differential-firing visual cue (turning left fires only the right nozzle).
+        // Internal signal only — not published to MQTT, no display client needs it.
+        public bool YawLeftActive { get; set; }
+        public bool YawRightActive { get; set; }
+
         // Altitude above the nearest planet's surface (m). Negative below the
         // surface (crash state). Written by PlayerShip each physics frame.
         public float AltitudeM { get; private set; }

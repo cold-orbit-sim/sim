@@ -484,12 +484,19 @@ public partial class PlayerShip : RigidBody3D
         Vector3 localTorque = Vector3.Zero;
         bool pitchActive = false, yawActive = false, rollActive = false;
 
+        bool yawLeft = Input.IsActionPressed("yaw_left");
+        bool yawRight = Input.IsActionPressed("yaw_right");
+
         if (Input.IsActionPressed("pitch_up")) { localTorque.X += TorqueForce; pitchActive = true; }
         if (Input.IsActionPressed("pitch_down")) { localTorque.X -= TorqueForce; pitchActive = true; }
-        if (Input.IsActionPressed("yaw_left")) { localTorque.Y += TorqueForce; yawActive = true; }
-        if (Input.IsActionPressed("yaw_right")) { localTorque.Y -= TorqueForce; yawActive = true; }
+        if (yawLeft) { localTorque.Y += TorqueForce; yawActive = true; }
+        if (yawRight) { localTorque.Y -= TorqueForce; yawActive = true; }
         if (Input.IsActionPressed("roll_left")) { localTorque.Z += TorqueForce; rollActive = true; }
         if (Input.IsActionPressed("roll_right")) { localTorque.Z -= TorqueForce; rollActive = true; }
+
+        // Read by EngineExhaust for the differential-firing visual cue.
+        SimBus.Instance.Propulsion.YawLeftActive = yawLeft;
+        SimBus.Instance.Propulsion.YawRightActive = yawRight;
 
         Basis basis = GlobalTransform.Basis;
 
