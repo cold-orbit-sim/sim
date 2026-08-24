@@ -146,20 +146,20 @@ public partial class ShipMesh : Node3D
     {
         if (!ApplyEngineExhaust) return;
 
-        var nozzlePositions = new List<Vector3>();
-        FindEngineGlowSurfaces(this, nozzlePositions);
+        var nozzleTransforms = new List<Transform3D>();
+        FindEngineGlowSurfaces(this, nozzleTransforms);
 
-        if (nozzlePositions.Count == 0)
+        if (nozzleTransforms.Count == 0)
         {
             GD.PrintErr("ShipMesh: no engine_glow surfaces found — exhaust effects not spawned");
             return;
         }
 
-        foreach (var pos in nozzlePositions)
+        foreach (var xf in nozzleTransforms)
         {
             var exhaust = new EngineExhaust();
             AddChild(exhaust);
-            exhaust.GlobalTransform = new Transform3D(GlobalTransform.Basis, pos);
+            exhaust.GlobalTransform = xf;
         }
     }
 
@@ -168,7 +168,7 @@ public partial class ShipMesh : Node3D
     // quirk in the source asset, confirmed by inspecting the GLB JSON directly) —
     // matching by material name alone would spawn a spurious plume at the bridge
     // dome, so bridge nodes are excluded explicitly (reusing BridgeNodes).
-    private void FindEngineGlowSurfaces(Node node, List<Vector3> positions)
+    private void FindEngineGlowSurfaces(Node node, List<Transform3D> transforms)
     {
         if (System.Array.IndexOf(BridgeNodes, node.Name.ToString()) >= 0)
             return;
@@ -192,14 +192,18 @@ public partial class ShipMesh : Node3D
                 }
 
                 // Each engine_glow-surfaced mesh in cruiser.glb (engine_core x3) is its
-                // own small node, confirmed against the GLB's node list — so the node's
-                // own global position is the nozzle mount point.
-                positions.Add(mi.GlobalPosition);
+                // own small node, confirmed against the GLB's node list — but the node
+                // carries its own baked local rotation (a -90° Z rotation in the source
+                // matrix), independent of the ship's ModelRotationDeg. Using the node's
+                // own GlobalTransform (not just its position) is load-bearing: reusing
+                // ShipMesh's basis instead dropped that local rotation and sent the
+                // plume 90° off (caught in play-test after batch 22).
+                transforms.Add(mi.GlobalTransform);
             }
         }
 
         foreach (Node child in node.GetChildren())
-            FindEngineGlowSurfaces(child, positions);
+            FindEngineGlowSurfaces(child, transforms);
     }
 
     // Creates one additive glow MeshInstance3D (sibling) per visible GLB mesh.
