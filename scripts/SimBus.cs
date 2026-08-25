@@ -95,6 +95,12 @@ public partial class SimBus : Node
     public override void _Ready()
     {
         Instance = this;
+
+        // Position the main OS window. SimBus is the first autoload (see
+        // project.godot), so this runs before the game scene or the other two
+        // OS windows exist — see WindowLayout for the three-window split.
+        WindowLayout.ApplyMainWindowLayout();
+
         Touchscreen.Mode = LoadTouchscreenMode();
         Mqtt = new MqttTelemetryPublisher(MqttBrokerHost, MqttBrokerPort);
 

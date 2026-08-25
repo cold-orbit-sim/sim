@@ -204,7 +204,9 @@ public partial class AdminPanelWindow : Window
     public override void _Ready()
     {
         Title = "Cold Orbit — Admin";
-        Size = new Vector2I(900, 700);
+        var rect = WindowLayout.AdminPanelRect();
+        Position = rect.Position;
+        Size = rect.Size;
 
         var tabs = new TabContainer();
         tabs.SetAnchorsPreset(Control.LayoutPreset.FullRect);

@@ -125,7 +125,9 @@ public partial class ControlPanelsWindow : Window
     public override void _Ready()
     {
         Title = "Cold Orbit — Control Panels";
-        Size = new Vector2I(1000, 700);
+        var rect = WindowLayout.ControlPanelsRect();
+        Position = rect.Position;
+        Size = rect.Size;
 
         var tabs = new TabContainer();
         tabs.SetAnchorsPreset(Control.LayoutPreset.FullRect);
