@@ -15,12 +15,20 @@ public partial class Target : Node3D
     [Export] public float MoveAmplitudeM { get; set; } = 150f;      // distance either side of spawn point
     [Export] public float MoveSpeed { get; set; } = 0.3f;           // higher = faster oscillation
 
+    // Numeric differentiation rather than an analytic sine derivative — simpler,
+    // and generalizes automatically to any future non-sinusoidal target movement
+    // (e.g. an eventual AI enemy ship) without a second code path. Stays
+    // Vector3.Zero for non-moving targets (early-return below never touches it).
+    public Vector3 Velocity { get; private set; } = Vector3.Zero;
+
     private Vector3 _basePosition;
+    private Vector3 _lastPosition;
     private double _elapsed = 0.0;
 
     public override void _Ready()
     {
         _basePosition = Position;
+        _lastPosition = Position;
         AddToGroup("lockable_targets"); // future TargetingSystem/turret lock code queries this group
     }
 
@@ -31,5 +39,8 @@ public partial class Target : Node3D
         _elapsed += delta;
         float offset = Mathf.Sin((float)_elapsed * MoveSpeed) * MoveAmplitudeM;
         Position = _basePosition + MoveAxis.Normalized() * offset;
+
+        Velocity = (Position - _lastPosition) / (float)delta;
+        _lastPosition = Position;
     }
 }

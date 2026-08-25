@@ -1176,6 +1176,21 @@ public partial class SimBus : Node
         public string TargetClass { get; set; } = null;
         public string TargetAlliance { get; set; } = null;
         public int? TargetRangeM { get; set; } = null;
+
+        // --- Fire control commands: written by PlayerShip's placeholder keyboard
+        // input, consumed by ShipMesh.SyncTurretWithSimBus (batch 26). Same
+        // pending-field pattern as PendingTargetCycle above.
+        public bool FiringRequested { get; set; } = false;       // held state, not one-shot
+        public bool PendingReloadRequest { get; set; } = false;  // one-shot
+
+        // --- Fire control telemetry: written by ShipMesh each frame from TurretController ---
+        public bool Overheated { get; set; } = false;
+        public float Heat { get; set; } = 0f;
+        public bool Reloading { get; set; } = false;
+        public float ReloadProgress { get; set; } = 0f;
+        public float? TargetVelocityMs { get; set; } = null; // speed magnitude, not a vector
+        public string AmmoLoaded { get; set; } = "Kinetic Slug";
+        public Dictionary<string, int> AmmoRemaining { get; } = new();
     }
 
     public sealed class FtlState

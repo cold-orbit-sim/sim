@@ -422,8 +422,26 @@ public partial class ShipMesh : Node3D
             state.PendingTargetCycle = 0;
         }
 
+        // Fire control commands (batch 26): FiringRequested is held state (mirrored
+        // every frame, not consumed); PendingReloadRequest is one-shot like
+        // PendingTargetCycle above.
+        controller.SetFiring(state.FiringRequested);
+        if (state.PendingReloadRequest)
+        {
+            controller.StartReload();
+            state.PendingReloadRequest = false;
+        }
+
         state.LockState = controller.LockState;
         state.LockProgress = controller.LockProgress;
+        state.Overheated = controller.Overheated;
+        state.Heat = controller.Heat;
+        state.Reloading = controller.Reloading;
+        state.ReloadProgress = controller.ReloadProgress;
+        state.AmmoLoaded = controller.AmmoLoaded;
+        state.AmmoRemaining.Clear();
+        foreach (var kv in controller.AmmoRemaining) state.AmmoRemaining[kv.Key] = kv.Value;
+
         if (controller.HasTarget)
         {
             state.BearingDeg = controller.CurrentBearingDeg;
@@ -432,6 +450,7 @@ public partial class ShipMesh : Node3D
             state.TargetClass = controller.TargetClass;
             state.TargetAlliance = controller.TargetAlliance;
             state.TargetRangeM = Mathf.RoundToInt(controller.CurrentRangeM);
+            state.TargetVelocityMs = controller.CurrentTargetVelocityMs;
         }
         else
         {
@@ -441,6 +460,7 @@ public partial class ShipMesh : Node3D
             state.TargetClass = null;
             state.TargetAlliance = null;
             state.TargetRangeM = null;
+            state.TargetVelocityMs = null;
         }
     }
 

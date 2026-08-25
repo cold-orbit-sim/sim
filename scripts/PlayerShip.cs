@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text.Json;
 using Godot;
 using MQTTnet.Protocol;
@@ -22,7 +23,7 @@ namespace ColdOrbit.SimCore;
 //
 // Known simplifications (fine for a first pass, worth revisiting later):
 //  - Keyboard bindings are a placeholder for HOTAS + physical panel input.
-public partial class PlayerShip : RigidBody3D
+public partial class PlayerShip : RigidBody3D, IDamageable
 {
     [Export] public float ThrustForce { get; set; } = 4000f;       // Newtons, main engine
     [Export] public float RcsForce { get; set; } = 800f;            // Newtons, precision thrusters
@@ -148,7 +149,13 @@ public partial class PlayerShip : RigidBody3D
         "-----------------------\n" +
         "[ / ]        Dorsal turret: prev / next target\n" +
         ", / .        Ventral turret: prev / next target\n" +
-        "             (turret must be armed to track)";
+        "             (turret must be armed to track)\n" +
+        "\n" +
+        "Turrets (fire control)\n" +
+        "-----------------------\n" +
+        "Space        Fire (held) — all armed + locked turrets\n" +
+        "T / G        Reload: dorsal / ventral\n" +
+        "             (R/F are taken by RCS strafe — placeholder keys)";
 
     public override void _Ready()
     {
@@ -190,6 +197,12 @@ public partial class PlayerShip : RigidBody3D
         RegisterKeyAction("mix_economy", Key.Key1);
         RegisterKeyAction("mix_power", Key.Key2);
         RegisterKeyAction("toggle_help", Key.Slash); // "?" is Shift+/ on this key
+        RegisterKeyAction("turret_fire", Key.Space);
+        // R/F are already bound to strafe_up/strafe_down (RCS) above, so reload
+        // uses T (dorsal) / G (ventral) instead of the handover's suggested R/F —
+        // a deviation flagged in the batch 26 handback, not a silent resolution.
+        RegisterKeyAction("turret_reload_dorsal", Key.T);
+        RegisterKeyAction("turret_reload_ventral", Key.G);
 
         if (!DebugLabelPath.IsEmpty)
         {
@@ -251,6 +264,7 @@ public partial class PlayerShip : RigidBody3D
         HandleHelpToggle();
         HandleFtl(dt);
         HandleCollision(dt);
+        HandleTurretFireInput();
         UpdateDebugLabel();
         PublishTelemetry(dt);
         PublishMqttState();          // immediate: alerts only
@@ -320,6 +334,43 @@ public partial class PlayerShip : RigidBody3D
             if (_hullDamageAlertTimer <= 0f)
                 _hullDamageWantAlert = false;
         }
+    }
+
+    // Placeholder keyboard input for turret firing/reload (batch 26) — same
+    // "no physical hardware yet" pattern as every other placeholder in this
+    // codebase. Fire is a single shared input per §7.1: holding Space fires any
+    // turret that is simultaneously armed + locked, not a per-turret input like
+    // target-select. TurretController.TryFire re-checks Armed/Locked itself, so
+    // writing FiringRequested to both turrets unconditionally is safe.
+    private void HandleTurretFireInput()
+    {
+        bool firing = Input.IsActionPressed("turret_fire");
+        SimBus.Instance.TurretDorsal.FiringRequested = firing;
+        SimBus.Instance.TurretVentral.FiringRequested = firing;
+
+        if (Input.IsActionJustPressed("turret_reload_dorsal"))
+            SimBus.Instance.TurretDorsal.PendingReloadRequest = true;
+        if (Input.IsActionJustPressed("turret_reload_ventral"))
+            SimBus.Instance.TurretVentral.PendingReloadRequest = true;
+    }
+
+    // IDamageable — routes a weapon hit into the same subsystem damage
+    // distribution used for collisions (batch 19), reusing EngineeringState's
+    // impulse formula and hull/subsystem split rather than a second pipeline.
+    public void ApplyWeaponDamage(float impulseEquivalentN, Vector3 hitPointGlobal, bool nonLethal)
+    {
+        // Outward direction from ship center through the hit point approximates
+        // the surface normal at the impact site, same role as the physics-engine
+        // contact normal HandleCollision uses for collisions.
+        Vector3 worldNormal = (hitPointGlobal - GlobalPosition).Normalized();
+        SimBus.Instance.Engineering.ApplyDamage(
+            impulseEquivalentN, worldNormal, GlobalTransform.Basis, DamageScaleN, ZoneThreshold, nonLethal);
+
+        _hullDamageWantAlert = true;
+        _hullDamageAlertTimer = 5f;
+
+        SimBus.Instance.PublishEngineeringState();
+        SimBus.Instance.PublishRepairQueue();
     }
 
     // Receives per-contact impulse data during the physics step. Writes only to
@@ -883,16 +934,16 @@ public partial class PlayerShip : RigidBody3D
             target_class    = t.TargetClass,
             target_alliance = t.TargetAlliance,
             target_range_m  = t.TargetRangeM,
-            // ammo / heat: still MOCK — no firing logic exists yet (batch 24 ends
-            // at lock acquisition). Values match the previous stub so display
-            // clients see no change in shape.
-            ammo_loaded     = "Kinetic Slug",
-            ammo_remaining  = new object[]
-            {
-                new { type = "Kinetic Slug", count = 142 },
-                new { type = "EMP Round",    count = 28  },
-            },
-            heat = 0.0f,
+            // target_velocity_ms: speed magnitude (not a vector) of the selected
+            // target, same reference frame as propulsion's velocity_ms. Null when
+            // no target selected.
+            target_velocity_ms = t.TargetVelocityMs.HasValue ? (float?)MathF.Round(t.TargetVelocityMs.Value, 1) : null,
+            reloading       = t.Reloading,
+            reload_progress = MathF.Round(t.ReloadProgress, 3),
+            // ammo / heat: real values as of batch 26 (previously mocked).
+            ammo_loaded     = t.AmmoLoaded,
+            ammo_remaining  = t.AmmoRemaining.Select(kv => new { type = kv.Key, count = kv.Value }).ToArray(),
+            heat            = MathF.Round(t.Heat, 3),
         });
 
         mqtt.Publish($"coldorbit/output/turrets/{turretId}/state", payload,

@@ -40,9 +40,49 @@ public partial class TurretController : Node3D
     // drops its target — see _Process.
     public bool Armed { get; set; } = false;
 
+    // ── Fire control (batch 26) ─────────────────────────────────────────────
+    [Export] public float FireIntervalS { get; set; } = 0.35f;       // ~2.85 rounds/sec full-auto
+    [Export] public float HeatPerShot { get; set; } = 0.08f;         // ~12-13 shots to overheat
+    [Export] public float HeatCoolPerSecond { get; set; } = 0.15f;
+    [Export] public float OverheatResumeThreshold { get; set; } = 0.5f; // hysteresis — must cool to 50% before firing resumes
+    [Export] public float ReloadDurationS { get; set; } = 3.0f;
+    [Export] public float MuzzleForwardOffsetM { get; set; } = 2f; // eyeball-it barrel-tip offset — tune in editor
+
+    // Needed to solve the intercept — different ammo types travel at different
+    // speeds (see AmmoTable). Kept in sync with AmmoLoaded in FireOneRound/InitAmmo
+    // rather than looked up fresh every _Process frame.
+    [Export] public float ActiveProjectileSpeedMs { get; set; } = 800f;
+
+    // ammo_loaded is fixed for this batch — no panel/MQTT control exists yet to
+    // switch loadout (see handback: the handover's claim of an "already-existing
+    // ammo switch input path" wasn't found in the codebase).
+    public string AmmoLoaded { get; set; } = "Kinetic Slug";
+    public string FireMode { get; set; } = "lethal"; // "lethal" | "non_lethal"
+    public Dictionary<string, int> AmmoRemaining { get; } = new();
+    public Dictionary<string, int> AmmoMaxCapacity { get; } = new();
+    public float Heat { get; private set; } = 0f;
+    public bool Overheated { get; private set; } = false;
+    public bool Reloading { get; private set; } = false;
+    public float ReloadProgress { get; private set; } = 0f;
+
+    private static readonly Dictionary<string, (float speedMs, float impulseN, int capacity)> AmmoTable = new()
+    {
+        ["Kinetic Slug"] = (800f, 80000f, 150),
+        ["Tracer"]       = (900f, 60000f, 100),
+        ["Flechette"]    = (700f, 50000f, 80),
+        ["Incendiary"]   = (650f, 90000f, 60),
+        ["EMP Round"]    = (500f, 100000f, 30),
+    };
+
+    private bool _firing = false;
+    private float _fireTimer = 0f;
+    private int _nextMuzzleIndex = 0;
+
     private Node3D _pitchPivot;
     private Node3D _restFrame;   // turret root: never rotates, the reference frame for aim angles
     private Node3D _hullFrame;   // ShipMesh: the frame reported bearing/elevation are measured in
+    private Node3D _barrelA;
+    private Node3D _barrelB;
     private Node3D _selectedTarget;
     private TurretLockState _lockState = TurretLockState.None;
     private float _lockTimer = 0f;
@@ -74,8 +114,21 @@ public partial class TurretController : Node3D
         mantle.Reparent(_pitchPivot, true);
         barrelA.Reparent(_pitchPivot, true);
         barrelB.Reparent(_pitchPivot, true);
+        _barrelA = barrelA;
+        _barrelB = barrelB;
 
+        InitAmmo();
         RegisterKeyActions();
+    }
+
+    private void InitAmmo()
+    {
+        foreach (var (type, spec) in AmmoTable)
+        {
+            AmmoMaxCapacity[type] = spec.capacity;
+            AmmoRemaining[type] = spec.capacity;
+        }
+        ActiveProjectileSpeedMs = AmmoTable[AmmoLoaded].speedMs;
     }
 
     private void RegisterKeyActions()
@@ -166,7 +219,19 @@ public partial class TurretController : Node3D
         }
 
         float dt = (float)delta;
-        Vector3 toTarget = _selectedTarget.GlobalPosition - GlobalPosition;
+
+        // Lead-point aiming (batch 26): aim at where the target will be when a
+        // projectile fired right now would arrive, not at its raw current
+        // position. For a stationary target the intercept point equals the
+        // current position, so this generalizes batch 24's behavior rather than
+        // replacing it. Recomputed every frame, so it tracks the target's
+        // velocity at each instant — a shot already in flight can still miss if
+        // the target's velocity changes before it arrives (see TrajectoryMath).
+        Vector3 targetVelocity = GetTargetVelocity(_selectedTarget);
+        Vector3? interceptPoint = TrajectoryMath.SolveIntercept(
+            GlobalPosition, _selectedTarget.GlobalPosition, targetVelocity, ActiveProjectileSpeedMs);
+        Vector3 aimPoint = interceptPoint ?? _selectedTarget.GlobalPosition; // no valid solution: aim direct
+        Vector3 toTarget = aimPoint - GlobalPosition;
         float range = toTarget.Length();
 
         // Aim angles are computed in the REST frame (the turret root, which never
@@ -191,6 +256,102 @@ public partial class TurretController : Node3D
 
         bool aimed = IsAimed(targetYawDeg, targetPitchDeg);
         UpdateLockState(aimed, range, dt);
+
+        UpdateHeat(dt);
+        UpdateReload(dt);
+        if (_firing) TryFire(dt);
+    }
+
+    // Target velocity for the lead-point solve. Node3D has no shared velocity
+    // interface yet, so this switches on concrete type — see the TODO below.
+    private Vector3 GetTargetVelocity(Node3D target)
+    {
+        if (target is Target debugTarget) return debugTarget.Velocity;
+        // TODO: future enemy ships should expose velocity the same way (e.g. a
+        // shared interface) rather than each turret needing per-type knowledge.
+        return Vector3.Zero;
+    }
+
+    // Speed magnitude (not a vector) of the currently selected target, for the
+    // MQTT target_velocity_ms field. Null when no target selected.
+    public float? CurrentTargetVelocityMs => _selectedTarget != null
+        ? GetTargetVelocity(_selectedTarget).Length()
+        : (float?)null;
+
+    // Called from PlayerShip's shared fire input (Spacebar): held = true while
+    // the trigger is held. Firing itself is still gated on Armed + Locked in
+    // TryFire, so calling this on an unarmed/unlocked turret is a no-op.
+    public void SetFiring(bool firing) => _firing = firing;
+
+    public void StartReload()
+    {
+        if (Reloading) return;
+        if (AmmoRemaining.GetValueOrDefault(AmmoLoaded, 0) >= AmmoMaxCapacity.GetValueOrDefault(AmmoLoaded, 0)) return;
+        Reloading = true;
+        ReloadProgress = 0f;
+    }
+
+    private void UpdateHeat(float dt)
+    {
+        if (!_firing || Overheated) Heat = Mathf.Max(0f, Heat - HeatCoolPerSecond * dt);
+        if (Overheated && Heat <= OverheatResumeThreshold) Overheated = false;
+    }
+
+    private void UpdateReload(float dt)
+    {
+        if (!Reloading) return;
+        ReloadProgress += dt / ReloadDurationS;
+        if (ReloadProgress >= 1f)
+        {
+            AmmoRemaining[AmmoLoaded] = AmmoMaxCapacity.GetValueOrDefault(AmmoLoaded, 0);
+            Reloading = false;
+            ReloadProgress = 0f;
+        }
+    }
+
+    private void TryFire(float dt)
+    {
+        _fireTimer -= dt;
+        if (_fireTimer > 0f) return;
+        if (!Armed || _lockState != TurretLockState.Locked || Overheated || Reloading) return;
+        // Dry — needs reload, no auto-reload-on-empty per spec: the turret just
+        // stops firing (lock_state unaffected) until Reload is pressed.
+        if (AmmoRemaining.GetValueOrDefault(AmmoLoaded, 0) <= 0) return;
+
+        FireOneRound();
+        _fireTimer = FireIntervalS;
+    }
+
+    private void FireOneRound()
+    {
+        AmmoRemaining[AmmoLoaded]--;
+        Heat = Mathf.Min(1f, Heat + HeatPerShot);
+        if (Heat >= 1f) Overheated = true;
+
+        var spec = AmmoTable[AmmoLoaded];
+        ActiveProjectileSpeedMs = spec.speedMs;
+
+        // Aim point recomputed fresh at the moment of firing, not reused from
+        // the aiming code in _Process — the target may have moved since.
+        Vector3 aimPoint = _selectedTarget != null
+            ? TrajectoryMath.SolveIntercept(GlobalPosition, _selectedTarget.GlobalPosition,
+                GetTargetVelocity(_selectedTarget), spec.speedMs) ?? _selectedTarget.GlobalPosition
+            : GlobalPosition + _pitchPivot.GlobalTransform.Basis.X;
+
+        // Alternate barrels each shot for visual variety, like a real twin-barrel turret.
+        Node3D muzzle = _nextMuzzleIndex == 0 ? _barrelA : _barrelB;
+        _nextMuzzleIndex = 1 - _nextMuzzleIndex;
+        Vector3 aimDir = _pitchPivot.GlobalTransform.Basis.X.Normalized();
+        Vector3 muzzlePos = muzzle.GlobalPosition + aimDir * MuzzleForwardOffsetM;
+
+        var projectile = new Projectile
+        {
+            SpeedMs = spec.speedMs,
+            ImpulseEquivalentN = spec.impulseN,
+            NonLethal = FireMode == "non_lethal",
+        };
+        GetTree().CurrentScene.AddChild(projectile);
+        projectile.Launch(muzzlePos, aimPoint, _hullFrame);
     }
 
     private void RotateTurretYaw(float targetYawDeg, float dt)

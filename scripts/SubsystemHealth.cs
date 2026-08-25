@@ -99,50 +99,62 @@ public sealed class EngineeringState
 
     // Apply collision or weapon-hit damage. worldNormal is the contact normal in
     // world space; shipBasis is the ship's GlobalTransform.Basis at impact time.
-    // Always returns true (hull always takes ≥ 1 HP on any above-threshold hit).
+    // nonLethal (weapon hits only) skips the hull's 60% share entirely and routes
+    // 100% of the damage through the same location-based subsystem targeting
+    // instead of the normal 60/40 split — genuinely disable-focused (never
+    // touches hull health) without discarding 60% of the damage into nothing.
+    // Always returns true (hull always takes ≥ 1 HP on any above-threshold
+    // lethal hit; nonLethal hits take none).
     public bool ApplyDamage(
         float impulseN, Vector3 worldNormal, Basis shipBasis,
-        float damageScaleN, float zoneThreshold)
+        float damageScaleN, float zoneThreshold, bool nonLethal = false)
     {
         int totalDmg = Math.Max(1, Mathf.FloorToInt(impulseN / damageScaleN));
-        int hullDmg  = Math.Max(1, Mathf.FloorToInt(totalDmg * 0.6f));
+        int hullDmg  = nonLethal ? 0 : Math.Max(1, Mathf.FloorToInt(totalDmg * 0.6f));
         int subDmg   = totalDmg - hullDmg;
 
-        DamageSubsystem(Hull, hullDmg);
+        if (hullDmg > 0) DamageSubsystem(Hull, hullDmg);
 
         if (subDmg > 0)
         {
-            // Dot contact normal (world space) with ship's world-space Z axis.
-            // Z+ is the aft direction in Godot (-Z is forward), so dot > 0 = rear hit.
-            float dot = worldNormal.Dot(shipBasis.Z);
-            if (dot > zoneThreshold)
-            {
-                DamageSubsystem(Engines, subDmg);
-            }
-            else if (dot < -zoneThreshold)
-            {
-                DamageSubsystem(Weapons, subDmg);
-            }
-            else
-            {
-                // Side hit: cross product Y-sign determines port vs starboard.
-                // crossY < 0 → port (-X side); crossY ≥ 0 → starboard (+X side).
-                float crossY = worldNormal.Cross(shipBasis.Z).Y;
-                int half = subDmg / 2;
-                if (crossY < 0f)
-                {
-                    DamageSubsystem(Utility1, half);
-                    DamageSubsystem(Utility2, subDmg - half);
-                }
-                else
-                {
-                    DamageSubsystem(Utility3, half);
-                    DamageSubsystem(Utility4, subDmg - half);
-                }
-            }
+            DistributeSubsystemDamage(subDmg, worldNormal, shipBasis, zoneThreshold);
         }
 
         return true;
+    }
+
+    // Dot contact normal (world space) with ship's world-space Z axis.
+    // Z+ is the aft direction in Godot (-Z is forward), so dot > 0 = rear hit.
+    // Shared by the lethal 40%-share path and the non-lethal 100%-share path
+    // so the two never drift apart into separate zone-targeting logic.
+    private void DistributeSubsystemDamage(int subDmg, Vector3 worldNormal, Basis shipBasis, float zoneThreshold)
+    {
+        float dot = worldNormal.Dot(shipBasis.Z);
+        if (dot > zoneThreshold)
+        {
+            DamageSubsystem(Engines, subDmg);
+        }
+        else if (dot < -zoneThreshold)
+        {
+            DamageSubsystem(Weapons, subDmg);
+        }
+        else
+        {
+            // Side hit: cross product Y-sign determines port vs starboard.
+            // crossY < 0 → port (-X side); crossY ≥ 0 → starboard (+X side).
+            float crossY = worldNormal.Cross(shipBasis.Z).Y;
+            int half = subDmg / 2;
+            if (crossY < 0f)
+            {
+                DamageSubsystem(Utility1, half);
+                DamageSubsystem(Utility2, subDmg - half);
+            }
+            else
+            {
+                DamageSubsystem(Utility3, half);
+                DamageSubsystem(Utility4, subDmg - half);
+            }
+        }
     }
 
     private void DamageSubsystem(SubsystemRecord sys, int hp)
