@@ -266,7 +266,7 @@ public partial class ControlPanelsWindow : Window
             // the UI without firing this Toggled event.
             p.ArmToggle.Toggled += pressed =>
             {
-                PublishButtonStateQos1($"coldorbit/input/turret/{turretId}/arm", pressed ? 1 : 0);
+                PublishButtonStateQos1($"coldorbit/input/turrets/{turretId}/arm", pressed ? 1 : 0);
             };
             root.AddChild(Labeled("Arm", p.ArmToggle));
 
