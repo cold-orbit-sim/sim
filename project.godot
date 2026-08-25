@@ -33,3 +33,7 @@ window/subwindows/embed_subwindows=false
 [dotnet]
 
 project/assembly_name="sim-core"
+
+[layer_names]
+
+3d_physics/layer_5="targets"

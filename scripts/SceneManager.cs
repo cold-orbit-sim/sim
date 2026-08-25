@@ -17,9 +17,11 @@ public partial class SceneManager : Node
 
     private void LoadStartingSoI()
     {
-        // Kael is system K, planet index 0
-        var kael = new DriftData.Destination("K", 0, "Kael");
-        LoadSoI(kael, Vector3.Zero);
+        // DEBUG: firing range is the temporary start scene while testing lock-on.
+        // Revert to "kael" before anything resembling a release build.
+        // Revert: var kael = new DriftData.Destination("K", 0, "Kael"); LoadSoI(kael, Vector3.Zero);
+        var firingRange = new DriftData.Destination("DEBUG", 0, "FiringRange");
+        LoadSoI(firingRange, Vector3.Zero);
     }
 
     public void LoadSoI(DriftData.Destination dest, Vector3 inheritedVelocity)
@@ -93,6 +95,9 @@ public partial class SceneManager : Node
     // builds a generic SoI at runtime from DriftData.
     private BaseSoI BuildSoI(DriftData.Destination dest)
     {
+        if (dest.SystemId == "DEBUG" && dest.Name == "FiringRange")
+            return GD.Load<PackedScene>("res://scenes/soi_firing_range.tscn").Instantiate<BaseSoI>();
+
         if (dest.SystemId == "K")
         {
             if (dest.IsStar)
