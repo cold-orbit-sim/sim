@@ -261,10 +261,12 @@ public partial class ControlPanelsWindow : Window
             p.ArmToggle = new CheckButton();
             // Arming is the gate on tracking: TurretController drops its target
             // and stops traversing while unarmed (see TurretController._Process).
+            // Publish to MQTT only; the subscriber in SimBus updates state.Armed,
+            // and the mirror update below (SetPressedNoSignal) feeds it back to
+            // the UI without firing this Toggled event.
             p.ArmToggle.Toggled += pressed =>
             {
-                state.Armed = pressed;
-                PublishButtonStateQos1($"coldorbit/input/turrets/{turretId}/arm", pressed ? 1 : 0);
+                PublishButtonStateQos1($"coldorbit/input/turret/{turretId}/arm", pressed ? 1 : 0);
             };
             root.AddChild(Labeled("Arm", p.ArmToggle));
 

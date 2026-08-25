@@ -1,6 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using Godot;
+using MQTTnet.Protocol;
 
 namespace ColdOrbit.SimCore;
 
@@ -121,6 +124,22 @@ public partial class TurretController : Node3D
         RegisterKeyActions();
     }
 
+    // Keyboard input handler for target cycling. Publishes to MQTT so the input
+    // flows through the standard MQTT subscription path (SimBus.HandleTurretInput)
+    // which sets PendingTargetCycle, matching the architecture: keyboard is a
+    // stand-in for hardware at the MQTT layer.
+    private void PublishTargetCycle(int direction)
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        string topic = $"coldorbit/input/turret/{TurretId}/target_cycle";
+        string payload = JsonSerializer.Serialize(new
+        {
+            direction,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish(topic, payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: false);
+    }
+
     private void InitAmmo()
     {
         foreach (var (type, spec) in AmmoTable)
@@ -200,8 +219,8 @@ public partial class TurretController : Node3D
 
     public override void _Process(double delta)
     {
-        if (_prevAction != null && Input.IsActionJustPressed(_prevAction)) CycleTarget(-1);
-        if (_nextAction != null && Input.IsActionJustPressed(_nextAction)) CycleTarget(1);
+        if (_prevAction != null && Input.IsActionJustPressed(_prevAction)) PublishTargetCycle(-1);
+        if (_nextAction != null && Input.IsActionJustPressed(_nextAction)) PublishTargetCycle(1);
 
         // An unarmed turret is inert: it drops the target and stops tracking.
         // Cycling above still works so the panel can pre-select before arming,

@@ -344,14 +344,17 @@ public partial class PlayerShip : RigidBody3D, IDamageable
     // writing FiringRequested to both turrets unconditionally is safe.
     private void HandleTurretFireInput()
     {
+        // Fire: stays sim-only (direct write). Will be driven by HOTAS trigger
+        // in the future, which also writes directly to SimBus, not via MQTT.
         bool firing = Input.IsActionPressed("turret_fire");
         SimBus.Instance.TurretDorsal.FiringRequested = firing;
         SimBus.Instance.TurretVentral.FiringRequested = firing;
 
+        // Reload: publishes to MQTT so keyboard is a stand-in for hardware.
         if (Input.IsActionJustPressed("turret_reload_dorsal"))
-            SimBus.Instance.TurretDorsal.PendingReloadRequest = true;
+            PublishButtonStateQos1("coldorbit/input/turret/dorsal/reload", 1);
         if (Input.IsActionJustPressed("turret_reload_ventral"))
-            SimBus.Instance.TurretVentral.PendingReloadRequest = true;
+            PublishButtonStateQos1("coldorbit/input/turret/ventral/reload", 1);
     }
 
     // IDamageable — routes a weapon hit into the same subsystem damage
@@ -1125,6 +1128,17 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         var dest = new DriftData.Destination(ftl.SelectedSystemId, ftl.SelectedPlanetIndex, ftl.SelectedName);
         SceneManager.Instance.LoadSoI(dest, LinearVelocity);
         // SceneManager places ship at SpawnPosition and zeroes AngularVelocity.
+    }
+
+    private static void PublishButtonStateQos1(string topic, int state)
+    {
+        if (SimBus.Instance?.Mqtt == null) return;
+        string payload = JsonSerializer.Serialize(new
+        {
+            state,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        SimBus.Instance.Mqtt.Publish(topic, payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: false);
     }
 
     private void RegisterKeyAction(string action, Key key)

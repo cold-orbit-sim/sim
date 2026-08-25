@@ -117,6 +117,9 @@ public partial class SimBus : Node
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/softkey");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_a");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_b");
+        Mqtt.Subscribe("coldorbit/input/turret/+/arm");
+        Mqtt.Subscribe("coldorbit/input/turret/+/target_cycle");
+        Mqtt.Subscribe("coldorbit/input/turret/+/reload");
         Mqtt.MessageReceived += OnMqttMessageReceived;
         Mqtt.Connected += OnMqttConnected;
 
@@ -163,6 +166,13 @@ public partial class SimBus : Node
         if (topic.StartsWith(hpPrefix, StringComparison.Ordinal))
         {
             HandleHardpointInput(topic.Substring(hpPrefix.Length), payload);
+            return;
+        }
+
+        const string turretPrefix = "coldorbit/input/turret/";
+        if (topic.StartsWith(turretPrefix, StringComparison.Ordinal))
+        {
+            HandleTurretInput(topic.Substring(turretPrefix.Length), payload);
             return;
         }
 
@@ -629,6 +639,76 @@ public partial class SimBus : Node
     {
         int cur = (int)MathF.Round(hp.Intensity * 4f);
         hp.Intensity = Math.Clamp(cur + delta, 0, 4) / 4.0f;
+    }
+
+    // Turret input handler: routes MQTT payloads for arm/fire/reload/target_cycle
+    // to the appropriate TurretState. Parses topic path: turret/<id>/command,
+    // where id is "dorsal" or "ventral" and command is arm|fire|reload|target_cycle.
+    private void HandleTurretInput(string subPath, string payload)
+    {
+        // subPath = "dorsal/arm" | "dorsal/fire" | etc.
+        var parts = subPath.Split('/');
+        if (parts.Length != 2)
+        {
+            GD.PrintErr($"SimBus: malformed turret topic path '{subPath}'");
+            return;
+        }
+
+        string turretId = parts[0];
+        string command = parts[1];
+        var state = GetTurret(turretId);
+        if (state == null)
+        {
+            GD.PrintErr($"SimBus: unknown turret '{turretId}'");
+            return;
+        }
+
+        // target_cycle carries a direction field; parse before assuming state
+        if (command == "target_cycle")
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (doc.RootElement.TryGetProperty("direction", out var d))
+                {
+                    int direction = d.GetInt32();
+                    state.PendingTargetCycle = direction;
+                }
+            }
+            catch (JsonException ex)
+            {
+                GD.PrintErr($"SimBus: malformed payload on turret {turretId} target_cycle: {ex.Message}");
+            }
+            return;
+        }
+
+        // All other turret commands use the standard state field
+        int stateValue;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            stateValue = doc.RootElement.TryGetProperty("state", out var s) ? s.GetInt32() : -1;
+        }
+        catch (JsonException ex)
+        {
+            GD.PrintErr($"SimBus: malformed payload on turret {turretId} {command}: {ex.Message}");
+            return;
+        }
+
+        switch (command)
+        {
+            case "arm":
+                state.Armed = stateValue != 0;
+                break;
+            case "reload":
+                // Only act on press (state 1); release is ignored
+                if (stateValue == 1)
+                    state.PendingReloadRequest = true;
+                break;
+            default:
+                GD.PrintErr($"SimBus: unknown turret command '{command}'");
+                break;
+        }
     }
 
     // Sets Acknowledged = true on all active alerts matching the predicate.
