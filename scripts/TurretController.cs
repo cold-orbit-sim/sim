@@ -131,7 +131,7 @@ public partial class TurretController : Node3D
     private void PublishTargetCycle(int direction)
     {
         if (SimBus.Instance?.Mqtt == null) return;
-        string topic = $"coldorbit/input/turret/{TurretId}/target_cycle";
+        string topic = $"coldorbit/input/turrets/{TurretId}/target_cycle";
         string payload = JsonSerializer.Serialize(new
         {
             direction,

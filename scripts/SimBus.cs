@@ -117,9 +117,9 @@ public partial class SimBus : Node
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/softkey");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_a");
         Mqtt.Subscribe("coldorbit/input/hardpoints/+/encoder_b");
-        Mqtt.Subscribe("coldorbit/input/turret/+/arm");
-        Mqtt.Subscribe("coldorbit/input/turret/+/target_cycle");
-        Mqtt.Subscribe("coldorbit/input/turret/+/reload");
+        Mqtt.Subscribe("coldorbit/input/turrets/+/arm");
+        Mqtt.Subscribe("coldorbit/input/turrets/+/target_cycle");
+        Mqtt.Subscribe("coldorbit/input/turrets/+/reload");
         Mqtt.MessageReceived += OnMqttMessageReceived;
         Mqtt.Connected += OnMqttConnected;
 
@@ -169,7 +169,7 @@ public partial class SimBus : Node
             return;
         }
 
-        const string turretPrefix = "coldorbit/input/turret/";
+        const string turretPrefix = "coldorbit/input/turrets/";
         if (topic.StartsWith(turretPrefix, StringComparison.Ordinal))
         {
             HandleTurretInput(topic.Substring(turretPrefix.Length), payload);

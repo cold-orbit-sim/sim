@@ -352,9 +352,9 @@ public partial class PlayerShip : RigidBody3D, IDamageable
 
         // Reload: publishes to MQTT so keyboard is a stand-in for hardware.
         if (Input.IsActionJustPressed("turret_reload_dorsal"))
-            PublishButtonStateQos1("coldorbit/input/turret/dorsal/reload", 1);
+            PublishButtonStateQos1("coldorbit/input/turrets/dorsal/reload", 1);
         if (Input.IsActionJustPressed("turret_reload_ventral"))
-            PublishButtonStateQos1("coldorbit/input/turret/ventral/reload", 1);
+            PublishButtonStateQos1("coldorbit/input/turrets/ventral/reload", 1);
     }
 
     // IDamageable — routes a weapon hit into the same subsystem damage
