@@ -41,8 +41,8 @@ public partial class TurretController : Node3D
     public bool Armed { get; set; } = false;
 
     // ── Fire control (batch 26) ─────────────────────────────────────────────
-    [Export] public float FireIntervalS { get; set; } = 0.35f;       // ~2.85 rounds/sec full-auto
-    [Export] public float HeatPerShot { get; set; } = 0.08f;         // ~12-13 shots to overheat
+    [Export] public float FireIntervalS { get; set; } = 0.175f;      // ~5.7 rounds/sec full-auto (2x)
+    [Export] public float HeatPerShot { get; set; } = 0.0267f;       // ~37-38 shots to overheat (1/3)
     [Export] public float HeatCoolPerSecond { get; set; } = 0.15f;
     [Export] public float OverheatResumeThreshold { get; set; } = 0.5f; // hysteresis — must cool to 50% before firing resumes
     [Export] public float ReloadDurationS { get; set; } = 3.0f;
