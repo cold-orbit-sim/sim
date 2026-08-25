@@ -3,7 +3,7 @@
 [ext_resource type="Script" path="res://scripts/Target.cs" id="1"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_1"]
-size = Vector3(4, 4, 4)
+size = Vector3(14, 14, 14)
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1"]
 shading_mode = 0
@@ -13,7 +13,7 @@ emission = Color(1, 0.25, 0.05, 1)
 emission_energy_multiplier = 4.0
 
 [sub_resource type="SphereShape3D" id="SphereShape3D_1"]
-radius = 5.0
+radius = 12.0
 
 [node name="Target" type="Node3D"]
 script = ExtResource("1")
@@ -24,8 +24,8 @@ surface_material_override/0 = SubResource("StandardMaterial3D_1")
 
 [node name="TargetLight" type="OmniLight3D" parent="."]
 light_color = Color(1, 0.4, 0.1, 1)
-light_energy = 1.5
-omni_range = 30.0
+light_energy = 2.0
+omni_range = 60.0
 
 [node name="LockVolume" type="Area3D" parent="."]
 collision_layer = 16
