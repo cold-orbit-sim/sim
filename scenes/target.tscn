@@ -1,16 +1,26 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://scripts/Target.cs" id="1"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_1"]
 size = Vector3(14, 14, 14)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1"]
-shading_mode = 0
-albedo_color = Color(1, 0.25, 0.05, 1)
-emission_enabled = true
-emission = Color(1, 0.25, 0.05, 1)
-emission_energy_multiplier = 4.0
+[sub_resource type="Shader" id="Shader_1"]
+code = "shader_type spatial;
+render_mode unshaded;
+
+uniform float checker_scale = 4.0;
+
+void fragment() {
+	vec2 cell = floor(UV * checker_scale);
+	bool white = mod(cell.x + cell.y, 2.0) < 1.0;
+	ALBEDO = white ? vec3(1.0, 1.0, 1.0) : vec3(1.0, 0.05, 0.05);
+}
+"
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_1"]
+shader = SubResource("Shader_1")
+shader_parameter/checker_scale = 4.0
 
 [sub_resource type="SphereShape3D" id="SphereShape3D_1"]
 radius = 12.0
@@ -20,10 +30,10 @@ script = ExtResource("1")
 
 [node name="TargetMesh" type="MeshInstance3D" parent="."]
 mesh = SubResource("BoxMesh_1")
-surface_material_override/0 = SubResource("StandardMaterial3D_1")
+surface_material_override/0 = SubResource("ShaderMaterial_1")
 
 [node name="TargetLight" type="OmniLight3D" parent="."]
-light_color = Color(1, 0.4, 0.1, 1)
+light_color = Color(1, 0.85, 0.85, 1)
 light_energy = 2.0
 omni_range = 60.0
 
