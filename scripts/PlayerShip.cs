@@ -942,7 +942,7 @@ public partial class PlayerShip : RigidBody3D, IDamageable
             reload_progress = MathF.Round(t.ReloadProgress, 3),
             // ammo / heat: real values as of batch 26 (previously mocked).
             ammo_loaded     = t.AmmoLoaded,
-            ammo_remaining  = t.AmmoRemaining.Select(kv => new { type = kv.Key, count = kv.Value }).ToArray(),
+            ammo_remaining  = t.AmmoRemaining.Select(kv => new { type = kv.Key, count = kv.Value, max = t.AmmoMaxCapacity.ContainsKey(kv.Key) ? t.AmmoMaxCapacity[kv.Key] : kv.Value }).ToArray(),
             heat            = MathF.Round(t.Heat, 3),
         });
 

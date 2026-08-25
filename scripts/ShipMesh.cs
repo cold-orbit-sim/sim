@@ -432,6 +432,14 @@ public partial class ShipMesh : Node3D
             state.PendingReloadRequest = false;
         }
 
+        if (state.PendingAmmoOverride.Count > 0)
+        {
+            foreach (var kv in state.PendingAmmoOverride)
+                if (controller.AmmoMaxCapacity.TryGetValue(kv.Key, out int cap))
+                    controller.AmmoRemaining[kv.Key] = Mathf.Clamp(kv.Value, 0, cap);
+            state.PendingAmmoOverride.Clear();
+        }
+
         state.LockState = controller.LockState;
         state.LockProgress = controller.LockProgress;
         state.Overheated = controller.Overheated;

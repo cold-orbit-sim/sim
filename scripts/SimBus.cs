@@ -1192,6 +1192,12 @@ public partial class SimBus : Node
         public string AmmoLoaded { get; set; } = "Kinetic Slug";
         public Dictionary<string, int> AmmoRemaining { get; } = new();
         public Dictionary<string, int> AmmoMaxCapacity { get; } = new();
+
+        // One-shot admin override: type -> desired count, consumed by
+        // ShipMesh.SyncTurretWithSimBus into the real TurretController.AmmoRemaining
+        // (clamped to capacity), then cleared. Same pending-field pattern as
+        // PendingTargetCycle above.
+        public Dictionary<string, int> PendingAmmoOverride { get; } = new();
     }
 
     public sealed class FtlState

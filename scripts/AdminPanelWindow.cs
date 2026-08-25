@@ -948,11 +948,11 @@ public partial class AdminPanelWindow : Window
             root.AddChild(Labeled("Ammo Loaded", t.AmmoLoadedOption));
 
             t.KineticCountBox = MakeSpinBox(0, 9999, 142);
-            t.KineticCountBox.ValueChanged += _ => PublishTurret(t);
+            t.KineticCountBox.ValueChanged += v => { OverrideAmmo(t, "Kinetic Slug", (int)v); PublishTurret(t); };
             root.AddChild(Labeled("Kinetic Slug Count", t.KineticCountBox));
 
             t.EmpCountBox = MakeSpinBox(0, 9999, 28);
-            t.EmpCountBox.ValueChanged += _ => PublishTurret(t);
+            t.EmpCountBox.ValueChanged += v => { OverrideAmmo(t, "EMP Round", (int)v); PublishTurret(t); };
             root.AddChild(Labeled("EMP Round Count", t.EmpCountBox));
 
             t.HeatSlider = MakeSlider(0, 1, 0);
@@ -964,6 +964,16 @@ public partial class AdminPanelWindow : Window
         }
 
         return root;
+    }
+
+    // Writes an actual override into the real TurretController.AmmoRemaining
+    // (via ShipMesh's pending-field bridge), so the count box changes the ammo
+    // the sim fires from, not just the retained MQTT snapshot.
+    private void OverrideAmmo(TurretState t, string ammoType, int count)
+    {
+        var turret = SimBus.Instance?.GetTurret(t.Id);
+        if (turret == null) return;
+        turret.PendingAmmoOverride[ammoType] = count;
     }
 
     private void PublishTurret(TurretState t)
