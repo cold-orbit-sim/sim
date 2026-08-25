@@ -34,6 +34,17 @@ public partial class SimBus : Node
     public AlertsState Alerts { get; } = new();
     public CameraState Cameras { get; } = new();
     public EngineeringState Engineering { get; } = new();
+    public TurretState TurretDorsal { get; } = new();
+    public TurretState TurretVentral { get; } = new();
+
+    // Turrets are addressed by the same id used in the MQTT topic segment, so
+    // panels and controllers can look one up without a hardcoded field per side.
+    public TurretState GetTurret(string turretId) => turretId switch
+    {
+        "dorsal"  => TurretDorsal,
+        "ventral" => TurretVentral,
+        _         => null,
+    };
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
     // Set by PlayerShip._Ready from its [Export]. Published retained on every
@@ -766,7 +777,9 @@ public partial class SimBus : Node
         PublishEngineeringState();
         PublishRepairQueue();
         PublishCommsStubs();
-        PublishTurretStubs();
+        // Turret stubs retired (batch 24) — PlayerShip.PublishTurretState now
+        // publishes real turret state on the rate-limited telemetry path, and
+        // lands within one publish interval of connect.
         PublishMissileStubs();
         // Hardpoint stubs retired — real publish happens in OnMqttConnected.
 
@@ -839,34 +852,6 @@ public partial class SimBus : Node
                   vessel_class = "Light Freighter", range_m = 1240 },
         });
         Mqtt.Publish("coldorbit/output/comms/targets", targetsPayload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
-    }
-
-    private void PublishTurretStubs()
-    {
-        // MOCK — §3.1b turrets contract. Replace with real turret state when turret system exists.
-        foreach (var turret in new[] { "dorsal", "ventral" })
-        {
-            var payload = JsonSerializer.Serialize(new
-            {
-                turret,
-                armed = false,
-                fire_mode = "lethal",
-                lock_state = "none",
-                bearing_deg = (float?)null,
-                target_name = (string?)null,
-                target_class = (string?)null,
-                target_alliance = (string?)null,
-                target_range_m = (int?)null,
-                ammo_loaded = "Kinetic Slug",
-                ammo_remaining = new object[]
-                {
-                    new { type = "Kinetic Slug", count = 142 },
-                    new { type = "EMP Round",    count = 28  },
-                },
-                heat = 0.0f,
-            });
-            Mqtt.Publish($"coldorbit/output/turrets/{turret}/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
-        }
     }
 
     private void PublishMissileStubs()
@@ -1157,6 +1142,34 @@ public partial class SimBus : Node
             AltitudeM = altitudeM;
             DampenerMode = dampenerMode;
         }
+    }
+
+    // Mirrors the live TurretController state for one turret. Commands are
+    // written by the control panel; telemetry is written each frame by ShipMesh
+    // from its TurretController instances (batch 24). PlayerShip.PublishTurretState
+    // publishes this to coldorbit/output/turrets/{id}/state on the rate-limited
+    // telemetry path.
+    public sealed class TurretState
+    {
+        // --- Commands: written by the control panel, read by TurretController ---
+        public bool Armed { get; set; } = false;
+        public string FireMode { get; set; } = "lethal";
+
+        // One-shot target-cycle request (-1 prev, +1 next), consumed by ShipMesh
+        // on the next frame. Same pending-field pattern as Cameras.PendingView —
+        // the panel lives in another OS window with no scene-tree reference to
+        // the turret, and cycling must happen on the main thread.
+        public int PendingTargetCycle { get; set; } = 0;
+
+        // --- Telemetry: written by ShipMesh each frame from TurretController ---
+        public TurretLockState LockState { get; set; } = TurretLockState.None;
+        public float LockProgress { get; set; } = 0f; // 0–1 through the acquisition timer
+        public float? BearingDeg { get; set; } = null;
+        public float? ElevationDeg { get; set; } = null;
+        public string TargetName { get; set; } = null;
+        public string TargetClass { get; set; } = null;
+        public string TargetAlliance { get; set; } = null;
+        public int? TargetRangeM { get; set; } = null;
     }
 
     public sealed class FtlState

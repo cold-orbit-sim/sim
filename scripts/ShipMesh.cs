@@ -33,6 +33,9 @@ public partial class ShipMesh : Node3D
     }
     private readonly List<EngineGlowEntry> _engineGlowEntries = new();
 
+    private TurretController _turretDorsal;
+    private TurretController _turretVentral;
+
     // How fast the nozzle glow eases toward its target brightness, in 1/s. Shared by
     // spool-up and the fade-to-off on disable, so cutting propulsion reads as the
     // glow dying down naturally rather than snapping off.
@@ -51,9 +54,57 @@ public partial class ShipMesh : Node3D
                 GD.PushWarning($"ShipMesh: could not find bridge node '{nodeName}' to hide");
         }
 
+        // Turret controllers FIRST: they reparent the ring/mantle/barrel meshes
+        // under new pivot nodes. BuildGlowOverlays clones each mesh as a sibling
+        // for the temperature glow, so it has to run after the reparenting —
+        // otherwise the clones are created under the old (non-rotating) parent
+        // and stay behind as static ghost turrets when the real one traverses.
+        ApplyTurretControllers();
+
         BuildGlowOverlays();
         ApplyWeatheredHull();
         ApplyEngineExhaustEffects();
+    }
+
+    // Spawns a TurretController pivot for each turret rig found in the GLB.
+    // See TurretController's class doc for why it reparents the ring/mantle/
+    // barrels instead of attaching a script to the GLB-imported root node.
+    private void ApplyTurretControllers()
+    {
+        _turretDorsal = AttachTurretController("turret_dorsal_fwd", "dorsal");
+        _turretVentral = AttachTurretController("turret_ventral_fwd", "ventral");
+    }
+
+    private TurretController AttachTurretController(string nodeName, string turretId)
+    {
+        var turretRoot = FindChild(nodeName, recursive: true, owned: false) as Node3D;
+        if (turretRoot == null)
+        {
+            GD.PrintErr($"ShipMesh: turret root '{nodeName}' not found — turret controller not attached");
+            return null;
+        }
+
+        var ring = turretRoot.FindChild($"{nodeName}_ring", recursive: false, owned: false) as Node3D;
+        var mantle = turretRoot.FindChild($"{nodeName}_mantle", recursive: false, owned: false) as Node3D;
+        var barrels = new List<Node3D>();
+        foreach (Node child in turretRoot.GetChildren())
+            if (child is Node3D n3d && child.Name.ToString().Contains("_barrel"))
+                barrels.Add(n3d);
+
+        if (ring == null || mantle == null || barrels.Count < 2)
+        {
+            GD.PrintErr($"ShipMesh: turret '{nodeName}' missing ring, mantle, or barrels — controller not attached");
+            return null;
+        }
+
+        var controller = new TurretController { Name = $"{turretId}_TurretController", TurretId = turretId };
+        turretRoot.AddChild(controller);
+        controller.GlobalTransform = turretRoot.GlobalTransform;
+        // `this` is the hull reference frame for reported bearing/elevation —
+        // ShipMesh's local space is the GLB model frame (+X nose, +Y up,
+        // +Z starboard). See TurretController.CurrentBearingDeg.
+        controller.Setup(this, ring, mantle, barrels[0], barrels[1]);
+        return controller;
     }
 
     private void ApplyWeatheredHull()
@@ -351,6 +402,45 @@ public partial class ShipMesh : Node3D
                 entry.Energy = Mathf.Lerp(entry.Energy, targetEnergy, k);
                 entry.Material.EmissionEnergyMultiplier = entry.Energy;
             }
+        }
+
+        SyncTurretWithSimBus(_turretDorsal, SimBus.Instance?.TurretDorsal);
+        SyncTurretWithSimBus(_turretVentral, SimBus.Instance?.TurretVentral);
+    }
+
+    // Two-way bridge between a TurretController (pure mechanism, no SimBus
+    // knowledge) and its SimBus state: commands in, telemetry out.
+    private static void SyncTurretWithSimBus(TurretController controller, SimBus.TurretState state)
+    {
+        if (controller == null || state == null) return;
+
+        controller.Armed = state.Armed;
+
+        if (state.PendingTargetCycle != 0)
+        {
+            controller.CycleTarget(state.PendingTargetCycle);
+            state.PendingTargetCycle = 0;
+        }
+
+        state.LockState = controller.LockState;
+        state.LockProgress = controller.LockProgress;
+        if (controller.HasTarget)
+        {
+            state.BearingDeg = controller.CurrentBearingDeg;
+            state.ElevationDeg = controller.CurrentElevationDeg;
+            state.TargetName = controller.TargetName;
+            state.TargetClass = controller.TargetClass;
+            state.TargetAlliance = controller.TargetAlliance;
+            state.TargetRangeM = Mathf.RoundToInt(controller.CurrentRangeM);
+        }
+        else
+        {
+            state.BearingDeg = null;
+            state.ElevationDeg = null;
+            state.TargetName = null;
+            state.TargetClass = null;
+            state.TargetAlliance = null;
+            state.TargetRangeM = null;
         }
     }
 

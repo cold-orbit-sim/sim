@@ -108,6 +108,20 @@ public partial class ControlPanelsWindow : Window
     }
     private readonly List<HardpointPanelState> _hardpointPanels = new();
 
+    // ── Turret panel state (one per turret) ───────────────────────────────
+    private sealed class TurretPanelState
+    {
+        public string TurretId;
+        public CheckButton ArmToggle;
+        public Label TargetLabel;
+        public ColorRect LockLed;
+        public Label LockLabel;
+        public Label BearingLabel;
+        public Label ElevationLabel;
+        public Label RangeLabel;
+    }
+    private readonly List<TurretPanelState> _turretPanels = new();
+
     public override void _Ready()
     {
         Title = "Cold Orbit — Control Panels";
@@ -142,6 +156,7 @@ public partial class ControlPanelsWindow : Window
         SyncHardpointsFromBus();
         SyncCamerasFromBus();
         SyncRepairFromBus();
+        SyncTurretsFromBus();
     }
 
     // --- Layout helpers -----------------------------------------------
@@ -227,18 +242,89 @@ public partial class ControlPanelsWindow : Window
     private Control BuildTurretsTab()
     {
         var root = new VBoxContainer();
-        for (int i = 1; i <= 2; i++)
+        _turretPanels.Clear();
+
+        foreach (var turretId in new[] { "dorsal", "ventral" })
         {
-            root.AddChild(new Label { Text = $"Turret {i}" });
-            root.AddChild(Labeled("Arm", new CheckButton()));
+            var state = SimBus.Instance.GetTurret(turretId);
+            var p = new TurretPanelState { TurretId = turretId };
+
+            root.AddChild(new Label { Text = $"── {turretId} turret ──" });
+
+            p.ArmToggle = new CheckButton();
+            // Arming is the gate on tracking: TurretController drops its target
+            // and stops traversing while unarmed (see TurretController._Process).
+            p.ArmToggle.Toggled += pressed =>
+            {
+                state.Armed = pressed;
+                PublishButtonStateQos1($"coldorbit/input/turrets/{turretId}/arm", pressed ? 1 : 0);
+            };
+            root.AddChild(Labeled("Arm", p.ArmToggle));
+
+            // Target select posts a one-shot cycle request; the actual selection
+            // happens on the main thread in ShipMesh, and the labels below follow
+            // from telemetry — no local mutation here, same reasoning as the FTL
+            // destination select.
+            var prev = new Button { Text = "◀" };
+            var next = new Button { Text = "▶" };
+            prev.Pressed += () => state.PendingTargetCycle = -1;
+            next.Pressed += () => state.PendingTargetCycle = 1;
+            p.TargetLabel = new Label
+            {
+                Text = "-- none --",
+                CustomMinimumSize = new Vector2(140, 0),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            root.AddChild(Labeled("Target Select", Row(prev, p.TargetLabel, next)));
+
+            p.LockLed = MakeLed(LedOff);
+            p.LockLabel = new Label { Text = "none" };
+            root.AddChild(Labeled("Lock", Row(p.LockLed, p.LockLabel)));
+
+            p.BearingLabel   = new Label { Text = "---" };
+            p.ElevationLabel = new Label { Text = "---" };
+            p.RangeLabel     = new Label { Text = "---" };
+            root.AddChild(Labeled("Bearing", p.BearingLabel));
+            root.AddChild(Labeled("Elevation", p.ElevationLabel));
+            root.AddChild(Labeled("Range", p.RangeLabel));
+
+            // Ammo / reload remain cosmetic — no firing logic exists yet (batch 24
+            // ends at lock acquisition; projectiles are the next batch).
             root.AddChild(Labeled("Ammo", MakeGauge()));
-            root.AddChild(Labeled("Target Select", MakeCycleSelect(new[] { "None", "Tgt A", "Tgt B", "Tgt C" })));
-            root.AddChild(Labeled("Lock", MakeLed(LedOff)));
             root.AddChild(Labeled("Reload", Row(new Button { Text = "Reload" }, MakeLed(LedOff))));
+
             root.AddChild(new HSeparator());
+            _turretPanels.Add(p);
         }
+
         root.AddChild(Labeled("Fire Mode (Single/Burst)", new CheckButton()));
         return root;
+    }
+
+    private void SyncTurretsFromBus()
+    {
+        foreach (var p in _turretPanels)
+        {
+            var state = SimBus.Instance.GetTurret(p.TurretId);
+            if (state == null) continue;
+
+            // Live-mirror write: NoSignal so a future non-panel arm path (MQTT,
+            // keyboard) doesn't re-fire Toggled and loop back out as input spam.
+            p.ArmToggle.SetPressedNoSignal(state.Armed);
+
+            p.TargetLabel.Text = state.TargetName ?? "-- none --";
+
+            (p.LockLed.Color, p.LockLabel.Text) = state.LockState switch
+            {
+                TurretLockState.Locked    => (LedGreen,  "LOCKED"),
+                TurretLockState.Acquiring => (LedOrange, $"acquiring… {state.LockProgress * 100f:F0}%"),
+                _                         => (LedOff,    "none"),
+            };
+
+            p.BearingLabel.Text   = state.BearingDeg.HasValue   ? $"{state.BearingDeg.Value:F1}°" : "---";
+            p.ElevationLabel.Text = state.ElevationDeg.HasValue ? $"{state.ElevationDeg.Value:F1}°" : "---";
+            p.RangeLabel.Text     = state.TargetRangeM.HasValue  ? $"{state.TargetRangeM.Value} m" : "---";
+        }
     }
 
     private Control BuildMissilesTab()

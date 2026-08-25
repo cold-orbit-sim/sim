@@ -135,7 +135,20 @@ public partial class PlayerShip : RigidBody3D
         "Z / C        Strafe left / right (RCS)\n" +
         "R / F        Strafe up / down (RCS)\n" +
         "1 / 2        Propellant mix: Economy / Power\n" +
-        "?            Toggle this help";
+        "?            Toggle this help\n" +
+        "\n" +
+        "Cameras\n" +
+        "-------\n" +
+        "F1 / F2      Forward / Aft\n" +
+        "F3           External / Chase\n" +
+        "F4 / F5      Dorsal / Ventral\n" +
+        "F6 / F7      Docking / Damage Inspection\n" +
+        "\n" +
+        "Turrets (target select)\n" +
+        "-----------------------\n" +
+        "[ / ]        Dorsal turret: prev / next target\n" +
+        ", / .        Ventral turret: prev / next target\n" +
+        "             (turret must be armed to track)";
 
     public override void _Ready()
     {
@@ -789,6 +802,8 @@ public partial class PlayerShip : RigidBody3D
         var mqtt = SimBus.Instance.Mqtt;
         PublishPropulsionState(mqtt);
         PublishFtlState(mqtt);
+        PublishTurretState(mqtt, "dorsal");
+        PublishTurretState(mqtt, "ventral");
 
         if (_engineeringNeedsPublish)
         {
@@ -837,6 +852,51 @@ public partial class PlayerShip : RigidBody3D
         });
 
         mqtt.Publish("coldorbit/output/propulsion/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // Real turret state, replacing the batch 8 mock stub. Same topic/retain/QoS
+    // as before (retained, QoS 1) and on the same rate-limited path as
+    // propulsion — bearing/elevation/range change every frame, so this must not
+    // publish per-physics-frame.
+    //
+    // NOTE: adds "elevation_deg" to the §3.1b turret contract (0 = level,
+    // positive = up, negative = down), per the batch 24 handover — Mike approved
+    // that specific addition in the planning conversation.
+    private void PublishTurretState(MqttTelemetryPublisher mqtt, string turretId)
+    {
+        var t = SimBus.Instance.GetTurret(turretId);
+        if (t == null) return;
+
+        string payload = JsonSerializer.Serialize(new
+        {
+            turret          = turretId,
+            armed           = t.Armed,
+            fire_mode       = t.FireMode,
+            lock_state      = t.LockState.ToString().ToLowerInvariant(), // none | acquiring | locked
+            // lock_progress: 0–1 through the acquisition timer, so a display can
+            // render a bar/countdown instead of a bare "acquiring". Same shape and
+            // convention as the FTL charge cycle's "progress".
+            lock_progress   = MathF.Round(t.LockProgress, 3),
+            bearing_deg     = t.BearingDeg.HasValue   ? (float?)MathF.Round(t.BearingDeg.Value, 1)   : null,
+            elevation_deg   = t.ElevationDeg.HasValue ? (float?)MathF.Round(t.ElevationDeg.Value, 1) : null,
+            target_name     = t.TargetName,
+            target_class    = t.TargetClass,
+            target_alliance = t.TargetAlliance,
+            target_range_m  = t.TargetRangeM,
+            // ammo / heat: still MOCK — no firing logic exists yet (batch 24 ends
+            // at lock acquisition). Values match the previous stub so display
+            // clients see no change in shape.
+            ammo_loaded     = "Kinetic Slug",
+            ammo_remaining  = new object[]
+            {
+                new { type = "Kinetic Slug", count = 142 },
+                new { type = "EMP Round",    count = 28  },
+            },
+            heat = 0.0f,
+        });
+
+        mqtt.Publish($"coldorbit/output/turrets/{turretId}/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
     }
 
     private void PublishFtlState(MqttTelemetryPublisher mqtt)
