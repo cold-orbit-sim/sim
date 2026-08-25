@@ -126,13 +126,13 @@ public partial class TurretController : Node3D
         InitAmmo();
         RegisterKeyActions();
 
-        // Hemisphere pitch bounds per mount position.
-        // Dorsal (top): barrel must stay above horizontal — clamp min to 0°.
-        // Ventral (bottom): barrel must stay below horizontal — clamp max to 0°.
-        // Both cover 90° of elevation to zenith/nadir; full 180° coverage is
-        // achieved via yaw. First-pass split at 0° — CONFIRM IN EDITOR once hull
-        // clearance can be measured in the cruiser.glb scene.
-        (MinPitchDeg, MaxPitchDeg) = TurretId == "ventral" ? (-90f, 0f) : (0f, 90f);
+        // Both turrets clamp to [0°, 90°] — but the physical meaning differs:
+        // Dorsal rest frame has no baked rotation: positive pitch = barrel up (away from hull below).
+        // Ventral rest frame has a 180° roll bake (turret_ventral_fwd), which inverts Y in
+        //   localToTarget: positive pitch = barrel DOWN (away from hull above), negative = into hull.
+        // Same numeric range [0, 90] therefore protects the correct hemisphere for each.
+        // First-pass split at 0° — CONFIRM IN EDITOR once hull clearance can be measured.
+        (MinPitchDeg, MaxPitchDeg) = (0f, 90f);
     }
 
     // Keyboard input handler for target cycling. Publishes to MQTT so the input
