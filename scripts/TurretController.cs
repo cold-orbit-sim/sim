@@ -31,8 +31,11 @@ public partial class TurretController : Node3D
     [Export] public float PitchTurnRateDegPerSec { get; set; } = 90f;
     [Export] public float AimToleranceDeg { get; set; } = 3f;
 
-    [Export] public float MinPitchDeg { get; set; } = -180f; // placeholder — no real hull-collision limit yet
-    [Export] public float MaxPitchDeg { get; set; } = 180f;
+    // Set in Setup() based on TurretId: dorsal [0, 90], ventral [-90, 0].
+    // First-pass split at horizontal — exact hull clearance not yet measured from
+    // cruiser.glb (CONFIRM IN EDITOR). Override via export in editor if needed.
+    [Export] public float MinPitchDeg { get; set; } = 0f;
+    [Export] public float MaxPitchDeg { get; set; } = 90f;
 
     [Export] public float MinLockTimeS { get; set; } = 0.5f;  // fastest possible lock, at close range
     [Export] public float MaxLockTimeS { get; set; } = 5.0f;  // slowest, at max test range
@@ -122,6 +125,14 @@ public partial class TurretController : Node3D
 
         InitAmmo();
         RegisterKeyActions();
+
+        // Hemisphere pitch bounds per mount position.
+        // Dorsal (top): barrel must stay above horizontal — clamp min to 0°.
+        // Ventral (bottom): barrel must stay below horizontal — clamp max to 0°.
+        // Both cover 90° of elevation to zenith/nadir; full 180° coverage is
+        // achieved via yaw. First-pass split at 0° — CONFIRM IN EDITOR once hull
+        // clearance can be measured in the cruiser.glb scene.
+        (MinPitchDeg, MaxPitchDeg) = TurretId == "ventral" ? (-90f, 0f) : (0f, 90f);
     }
 
     // Keyboard input handler for target cycling. Publishes to MQTT so the input
@@ -269,11 +280,15 @@ public partial class TurretController : Node3D
         RotateTurretYaw(targetYawDeg, dt);
 
         float horizontalDist = new Vector2(localToTarget.X, localToTarget.Z).Length();
-        float targetPitchDeg = Mathf.RadToDeg(Mathf.Atan2(localToTarget.Y, horizontalDist));
-        targetPitchDeg = Mathf.Clamp(targetPitchDeg, MinPitchDeg, MaxPitchDeg);
-        RotateTurretPitch(targetPitchDeg, dt);
+        float rawTargetPitchDeg = Mathf.RadToDeg(Mathf.Atan2(localToTarget.Y, horizontalDist));
+        // Clamp for the motor only. IsAimed uses the raw angle so that if the
+        // target is outside this turret's pitch arc (below dorsal, above ventral)
+        // the motor holds at the boundary but aimed stays false — preventing lock
+        // on a target the barrel physically cannot reach.
+        float motorPitchDeg = Mathf.Clamp(rawTargetPitchDeg, MinPitchDeg, MaxPitchDeg);
+        RotateTurretPitch(motorPitchDeg, dt);
 
-        bool aimed = IsAimed(targetYawDeg, targetPitchDeg);
+        bool aimed = IsAimed(targetYawDeg, rawTargetPitchDeg);
         UpdateLockState(aimed, range, dt);
 
         UpdateHeat(dt);
