@@ -58,21 +58,21 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 100, 10, -160)
 TargetDisplayName = "Mover-X"
 IsMoving = true
 MoveAxis = Vector3(1, 0, 0)
-MoveAmplitudeM = 40.0
-MoveSpeed = 0.25
+MoveAmplitudeM = 80.0
+MoveSpeed = 0.5
 
 [node name="Mover-Y" parent="." instance=ExtResource("2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -80, 20, -300)
 TargetDisplayName = "Mover-Y"
 IsMoving = true
 MoveAxis = Vector3(0, 1, 0)
-MoveAmplitudeM = 30.0
-MoveSpeed = 0.3
+MoveAmplitudeM = 60.0
+MoveSpeed = 0.6
 
 [node name="Mover-Z" parent="." instance=ExtResource("2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -40, -400)
 TargetDisplayName = "Mover-Z"
 IsMoving = true
 MoveAxis = Vector3(0, 0, 1)
-MoveAmplitudeM = 80.0
-MoveSpeed = 0.15
+MoveAmplitudeM = 160.0
+MoveSpeed = 0.3
