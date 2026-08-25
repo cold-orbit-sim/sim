@@ -1191,6 +1191,7 @@ public partial class SimBus : Node
         public float? TargetVelocityMs { get; set; } = null; // speed magnitude, not a vector
         public string AmmoLoaded { get; set; } = "Kinetic Slug";
         public Dictionary<string, int> AmmoRemaining { get; } = new();
+        public Dictionary<string, int> AmmoMaxCapacity { get; } = new();
     }
 
     public sealed class FtlState

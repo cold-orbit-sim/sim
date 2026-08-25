@@ -119,6 +119,11 @@ public partial class ControlPanelsWindow : Window
         public Label BearingLabel;
         public Label ElevationLabel;
         public Label RangeLabel;
+        public ProgressBar AmmoGauge;
+        public Label AmmoLabel;
+        public ProgressBar HeatGauge;
+        public Button ReloadButton;
+        public ColorRect ReloadLed;
     }
     private readonly List<TurretPanelState> _turretPanels = new();
 
@@ -290,10 +295,19 @@ public partial class ControlPanelsWindow : Window
             root.AddChild(Labeled("Elevation", p.ElevationLabel));
             root.AddChild(Labeled("Range", p.RangeLabel));
 
-            // Ammo / reload remain cosmetic — no firing logic exists yet (batch 24
-            // ends at lock acquisition; projectiles are the next batch).
-            root.AddChild(Labeled("Ammo", MakeGauge()));
-            root.AddChild(Labeled("Reload", Row(new Button { Text = "Reload" }, MakeLed(LedOff))));
+            // Ammo / heat / reload wired to real TurretController state (batch 26 —
+            // previously cosmetic placeholders left over from batch 24).
+            p.AmmoGauge = MakeGauge();
+            p.AmmoLabel = new Label { Text = "---" };
+            root.AddChild(Labeled("Ammo", Row(p.AmmoGauge, p.AmmoLabel)));
+
+            p.HeatGauge = MakeGauge(0f);
+            root.AddChild(Labeled("Heat", p.HeatGauge));
+
+            p.ReloadButton = new Button { Text = "Reload" };
+            p.ReloadLed = MakeLed(LedOff);
+            p.ReloadButton.Pressed += () => { state.PendingReloadRequest = true; };
+            root.AddChild(Labeled("Reload", Row(p.ReloadButton, p.ReloadLed)));
 
             root.AddChild(new HSeparator());
             _turretPanels.Add(p);
@@ -326,6 +340,15 @@ public partial class ControlPanelsWindow : Window
             p.BearingLabel.Text   = state.BearingDeg.HasValue   ? $"{state.BearingDeg.Value:F1}°" : "---";
             p.ElevationLabel.Text = state.ElevationDeg.HasValue ? $"{state.ElevationDeg.Value:F1}°" : "---";
             p.RangeLabel.Text     = state.TargetRangeM.HasValue  ? $"{state.TargetRangeM.Value} m" : "---";
+
+            int remaining = state.AmmoRemaining.GetValueOrDefault(state.AmmoLoaded, 0);
+            int max = state.AmmoMaxCapacity.GetValueOrDefault(state.AmmoLoaded, remaining);
+            p.AmmoGauge.Value = max > 0 ? (remaining / (float)max) * 100f : 0f;
+            p.AmmoLabel.Text = $"{remaining}/{max} {state.AmmoLoaded}";
+
+            p.HeatGauge.Value = state.Heat * 100f;
+            p.ReloadLed.Color = state.Reloading ? LedOrange : LedOff;
+            p.ReloadButton.Disabled = state.Reloading || remaining >= max;
         }
     }
 

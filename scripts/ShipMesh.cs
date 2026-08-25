@@ -441,6 +441,8 @@ public partial class ShipMesh : Node3D
         state.AmmoLoaded = controller.AmmoLoaded;
         state.AmmoRemaining.Clear();
         foreach (var kv in controller.AmmoRemaining) state.AmmoRemaining[kv.Key] = kv.Value;
+        if (state.AmmoMaxCapacity.Count == 0) // capacities never change post-init — copy once
+            foreach (var kv in controller.AmmoMaxCapacity) state.AmmoMaxCapacity[kv.Key] = kv.Value;
 
         if (controller.HasTarget)
         {

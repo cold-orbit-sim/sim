@@ -10,9 +10,30 @@ public partial class Projectile : Node3D
     [Export] public float ImpulseEquivalentN { get; set; } = 80000f;
     [Export] public bool NonLethal { get; set; } = false;
 
+    // Visible tracer mesh: a small bright unshaded sphere, additive-blended so
+    // it reads as a glowing round in flight. Not Emission — same "unreliable in
+    // this project" reasoning as EngineExhaust.cs's glow marker; brightness
+    // comes from AlbedoColor instead.
+    [Export] public float VisualRadiusM { get; set; } = 0.4f;
+    [Export] public Color TracerColor { get; set; } = new Color(1.0f, 0.85f, 0.4f);
+
     private Vector3 _direction;
     private float _lifetime = 0f;
     private Node3D _excludeShooter; // don't let a turret hit its own ship on spawn frame
+
+    public override void _Ready()
+    {
+        var mesh = new SphereMesh { Radius = VisualRadiusM, Height = VisualRadiusM * 2f, RadialSegments = 8, Rings = 4 };
+        var mat = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BlendMode = BaseMaterial3D.BlendModeEnum.Add,
+            AlbedoColor = TracerColor,
+        };
+        mesh.Material = mat;
+        AddChild(new MeshInstance3D { Mesh = mesh });
+    }
 
     public void Launch(Vector3 origin, Vector3 aimPoint, Node3D shooter)
     {
