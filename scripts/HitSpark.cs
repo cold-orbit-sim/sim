@@ -19,29 +19,29 @@ public partial class HitSpark : Node3D
     [Export] public float ParticleRadiusM { get; set; } = 0.15f;
 
     private GpuParticles3D _burst;
+    private ParticleProcessMaterial _procMat;
+    private Vector3 _projectileDir;
 
     // Called by Projectile.cs. Adds the spark to projectileParent so it survives
-    // the projectile's QueueFree. Position and orientation are set after AddChild
-    // (needs to be in the scene tree for GlobalPosition/GlobalBasis to work),
-    // then Emit() fires the burst.
+    // the projectile's QueueFree. Position is set after AddChild; direction is
+    // written directly into ParticleProcessMaterial.Direction (world-space, which
+    // equals the node's local space because HitSpark has no rotation applied).
+    // This avoids Basis.LookingAt semantics entirely.
     public static void Spawn(Node projectileParent, Vector3 worldPos, Vector3 projectileDir)
     {
         var spark = new HitSpark();
+        spark._projectileDir = projectileDir.Normalized();
         projectileParent.AddChild(spark);   // _Ready builds particles, Emitting = false
         spark.GlobalPosition = worldPos;
-        // Orient so local +Z points along the projectile's travel direction.
-        // Particles use Spread = 90° (forward hemisphere) so they don't fly back
-        // along the incoming trajectory — they shed forward into the target.
-        if (projectileDir.LengthSquared() > 0.01f)
-        {
-            var up = projectileDir.Abs().IsEqualApprox(Vector3.Up) ? Vector3.Forward : Vector3.Up;
-            spark.GlobalBasis = Basis.LookingAt(projectileDir, up, true);
-        }
         spark.Emit();
     }
 
     public void Emit()
     {
+        // Direction set here rather than _Ready because _projectileDir isn't
+        // assigned until after construction but before AddChild.
+        if (_projectileDir.LengthSquared() > 0.01f)
+            _procMat.Direction = _projectileDir;
         _burst.Emitting = true;
         var timer = GetTree().CreateTimer(LifetimeS + 0.15);
         timer.Timeout += QueueFree;
@@ -76,12 +76,12 @@ public partial class HitSpark : Node3D
         ramp.AddPoint(1f, new Color(0.3f, 0.05f, 0.0f, 0f));
         var rampTex = new GradientTexture1D { Gradient = ramp };
 
-        var procMat = new ParticleProcessMaterial
+        _procMat = new ParticleProcessMaterial
         {
-            // +Z hemisphere: particles fan forward into the target along the
-            // projectile's travel direction. Node is oriented in Spawn() so
-            // local +Z = projectile direction before Emitting is set true.
-            Direction = new Vector3(0f, 0f, 1f),
+            // Direction is overwritten in Emit() with the world-space projectile
+            // direction. HitSpark has no rotation, so local space == world space
+            // and the vector feeds straight through with no LookingAt transform.
+            Direction = Vector3.Forward,
             Spread = 90f,
             Gravity = Vector3.Zero,        // VACUUM — no gravity, no drag
             InitialVelocityMin = SpeedMinMs,
@@ -100,7 +100,7 @@ public partial class HitSpark : Node3D
             Explosiveness = 1f,   // emit all particles simultaneously — burst, not stream
             Emitting = false,     // held until Spawn() sets position/orientation, then calls Emit()
             DrawPass1 = mesh,
-            ProcessMaterial = procMat,
+            ProcessMaterial = _procMat,
         };
         AddChild(_burst);
     }
