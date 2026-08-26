@@ -546,15 +546,41 @@ public partial class ShipMesh : Node3D
         if (state.PendingTypeAdvance)
         {
             state.PendingTypeAdvance = false;
-            if (state.Armed) { state.AdvanceType(); changed = true; }
+            if (state.Armed)
+            {
+                state.AdvanceType();
+                // Type change always requires a rearm cycle regardless of current status.
+                state.Status = "loading";
+                state.LoadTimer = 0f;
+                state.LockState = TurretLockState.None;
+                state.LockProgress = 0f;
+                changed = true;
+            }
         }
 
-        // Load / reload: Load IS the reload action for missiles — tube goes from
-        // empty → loaded. No auto-reload; player must press Load each time.
+        // Loading timer: ticks while tube is being reloaded after a type change.
+        if (state.Status == "loading")
+        {
+            state.LoadTimer += dt;
+            if (state.LoadTimer >= SimBus.MissileState.LoadDurationS)
+            {
+                state.Status = "loaded";
+                state.LoadTimer = 0f;
+                changed = true;
+            }
+        }
+
+        // Load / reload: tube goes from empty → loading (same timer as type change).
+        // No auto-reload; player must press Load each time.
         if (state.PendingLoad)
         {
             state.PendingLoad = false;
-            if (state.Armed && state.Status == "empty") { state.Status = "loaded"; changed = true; }
+            if (state.Armed && state.Status == "empty")
+            {
+                state.Status = "loading";
+                state.LoadTimer = 0f;
+                changed = true;
+            }
         }
 
         // Target cycle: scene-tree lookup, same group as turrets.
@@ -581,6 +607,12 @@ public partial class ShipMesh : Node3D
                 state.LockState = TurretLockState.Acquiring;
                 state.LockTimer = 0f;
                 changed = true;
+            }
+            else
+            {
+                GD.Print($"[missile {state.TubeId}] lock rejected — armed={state.Armed} " +
+                    $"status={state.Status} target={state.SelectedTarget?.Name ?? "null"} " +
+                    $"lockState={state.LockState}");
             }
         }
 

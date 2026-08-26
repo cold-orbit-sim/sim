@@ -127,6 +127,22 @@ public partial class ControlPanelsWindow : Window
     }
     private readonly List<TurretPanelState> _turretPanels = new();
 
+    // ── Missile panel state (one per tube) ───────────────────────────────
+    private sealed class MissilePanelState
+    {
+        public string TubeId;
+        public CheckButton ArmToggle;
+        public Label TypeLabel;
+        public Label StatusLabel;
+        public ColorRect StatusLed;
+        public ProgressBar LoadingBar;
+        public Label TargetLabel;
+        public ColorRect LockLed;
+        public Label LockLabel;
+        public Button FireButton;
+    }
+    private readonly List<MissilePanelState> _missilePanels = new();
+
     public override void _Ready()
     {
         Title = "Cold Orbit — Control Panels";
@@ -164,6 +180,7 @@ public partial class ControlPanelsWindow : Window
         SyncCamerasFromBus();
         SyncRepairFromBus();
         SyncTurretsFromBus();
+        SyncMissilesFromBus();
     }
 
     // --- Layout helpers -----------------------------------------------
@@ -357,21 +374,118 @@ public partial class ControlPanelsWindow : Window
     private Control BuildMissilesTab()
     {
         var root = new VBoxContainer();
-        for (int i = 1; i <= 2; i++)
+        _missilePanels.Clear();
+
+        foreach (var tubeId in new[] { "fore_port", "fore_starboard", "aft_port", "aft_starboard" })
         {
-            root.AddChild(new Label { Text = $"Missile Bay {i}" });
-            root.AddChild(Labeled("Arm", new CheckButton()));
-            // "4-position select" -- ammo type names are placeholders, not
-            // from the master plan (it specifies the control is 4-position,
-            // not what the 4 options are).
-            root.AddChild(Labeled("Ammo Type", MakeCycleSelect(new[] { "HE", "AP", "Flak", "EMP" })));
-            root.AddChild(Labeled("Load", new Button { Text = "Load" }));
-            root.AddChild(Labeled("Target Select", MakeCycleSelect(new[] { "None", "Tgt A", "Tgt B", "Tgt C" })));
-            root.AddChild(Labeled("Lock", MakeLed(LedOff)));
-            root.AddChild(Labeled("Fire", new Button { Text = "Fire" }));
+            var state = SimBus.Instance.GetMissile(tubeId);
+            var p = new MissilePanelState { TubeId = tubeId };
+
+            root.AddChild(new Label { Text = $"── {tubeId} ──" });
+
+            p.ArmToggle = new CheckButton();
+            p.ArmToggle.Toggled += pressed =>
+            {
+                PublishButtonStateQos1($"coldorbit/input/missiles/{tubeId}/arm", pressed ? 1 : 0);
+            };
+            root.AddChild(Labeled("Arm", p.ArmToggle));
+
+            // Type cycle: ◀/▶ publish one-shot type_cycle advances.
+            var typePrev = new Button { Text = "◀" };
+            var typeNext = new Button { Text = "▶" };
+            p.TypeLabel = new Label
+            {
+                Text = "Seeking",
+                CustomMinimumSize = new Vector2(140, 0),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            typePrev.Pressed += () => PublishButtonStateQos1($"coldorbit/input/missiles/{tubeId}/type_cycle", 1);
+            typeNext.Pressed += () => PublishButtonStateQos1($"coldorbit/input/missiles/{tubeId}/type_cycle", 1);
+            root.AddChild(Labeled("Type", Row(typePrev, p.TypeLabel, typeNext)));
+
+            // Status LED + loading progress bar.
+            p.StatusLed = MakeLed(LedGreen);
+            p.StatusLabel = new Label { Text = "loaded" };
+            p.LoadingBar = new ProgressBar { MinValue = 0, MaxValue = 100, Value = 0, CustomMinimumSize = new Vector2(100, 0) };
+            root.AddChild(Labeled("Status", Row(p.StatusLed, p.StatusLabel, p.LoadingBar)));
+
+            var loadButton = new Button { Text = "Load" };
+            loadButton.Pressed += () => PublishButtonStateQos1($"coldorbit/input/missiles/{tubeId}/load", 1);
+            root.AddChild(Labeled("Load", loadButton));
+
+            // Target cycle: direct SimBus write (same as turret target cycle).
+            var tgtPrev = new Button { Text = "◀" };
+            var tgtNext = new Button { Text = "▶" };
+            p.TargetLabel = new Label
+            {
+                Text = "-- none --",
+                CustomMinimumSize = new Vector2(140, 0),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            tgtPrev.Pressed += () => { state.PendingTargetCycle = -1; };
+            tgtNext.Pressed += () => { state.PendingTargetCycle = 1;  };
+            root.AddChild(Labeled("Target", Row(tgtPrev, p.TargetLabel, tgtNext)));
+
+            // Lock button + LED.
+            p.LockLed = MakeLed(LedOff);
+            p.LockLabel = new Label { Text = "none" };
+            var lockButton = new Button { Text = "Lock" };
+            lockButton.Pressed += () => PublishButtonStateQos1($"coldorbit/input/missiles/{tubeId}/lock", 1);
+            root.AddChild(Labeled("Lock", Row(p.LockLed, p.LockLabel, lockButton)));
+
+            // Fire button.
+            p.FireButton = new Button { Text = "FIRE" };
+            p.FireButton.Pressed += () => PublishButtonStateQos1($"coldorbit/input/missiles/{tubeId}/fire", 1);
+            root.AddChild(Labeled("Fire", p.FireButton));
+
             root.AddChild(new HSeparator());
+            _missilePanels.Add(p);
         }
+
         return root;
+    }
+
+    private void SyncMissilesFromBus()
+    {
+        foreach (var p in _missilePanels)
+        {
+            var state = SimBus.Instance.GetMissile(p.TubeId);
+            if (state == null) continue;
+
+            p.ArmToggle.SetPressedNoSignal(state.Armed);
+            p.TypeLabel.Text = state.MissileType;
+
+            switch (state.Status)
+            {
+                case "loaded":
+                    p.StatusLed.Color = LedGreen;
+                    p.StatusLabel.Text = "loaded";
+                    p.LoadingBar.Value = 100;
+                    break;
+                case "loading":
+                    p.StatusLed.Color = LedOrange;
+                    p.StatusLabel.Text = "loading…";
+                    p.LoadingBar.Value = Mathf.Clamp(
+                        state.LoadTimer / SimBus.MissileState.LoadDurationS * 100f, 0f, 100f);
+                    break;
+                default: // "empty"
+                    p.StatusLed.Color = LedOff;
+                    p.StatusLabel.Text = "empty";
+                    p.LoadingBar.Value = 0;
+                    break;
+            }
+
+            p.TargetLabel.Text = state.TargetName ?? "-- none --";
+
+            (p.LockLed.Color, p.LockLabel.Text) = state.LockState switch
+            {
+                TurretLockState.Locked    => (LedGreen,  "LOCKED"),
+                TurretLockState.Acquiring => (LedOrange, $"acquiring… {state.LockProgress * 100f:F0}%"),
+                _                         => (LedOff,    "none"),
+            };
+
+            p.FireButton.Disabled = !(state.Armed && state.Status == "loaded" && state.LockState == TurretLockState.Locked);
+        }
     }
 
     private Control BuildCamerasTab()
