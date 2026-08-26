@@ -79,7 +79,9 @@ public partial class HitSpark : Node3D
             // ordering race: if set in Emit() just before Emitting=true, the
             // renderer may not have received the updated uniform before the
             // one-shot burst fires.
-            Direction = _projectileDir.LengthSquared() > 0.01f ? _projectileDir : Vector3.Forward,
+            // Negated: Godot's particle shader emits in the -Direction hemisphere
+            // (confirmed empirically — forward hemisphere requires the opposite sign).
+            Direction = _projectileDir.LengthSquared() > 0.01f ? -_projectileDir : Vector3.Back,
             Spread = 90f,
             Gravity = Vector3.Zero,        // VACUUM — no gravity, no drag
             InitialVelocityMin = SpeedMinMs,
