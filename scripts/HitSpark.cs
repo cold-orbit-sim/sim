@@ -38,10 +38,6 @@ public partial class HitSpark : Node3D
 
     public void Emit()
     {
-        // Direction set here rather than _Ready because _projectileDir isn't
-        // assigned until after construction but before AddChild.
-        if (_projectileDir.LengthSquared() > 0.01f)
-            _procMat.Direction = _projectileDir;
         _burst.Emitting = true;
         var timer = GetTree().CreateTimer(LifetimeS + 0.15);
         timer.Timeout += QueueFree;
@@ -78,10 +74,12 @@ public partial class HitSpark : Node3D
 
         _procMat = new ParticleProcessMaterial
         {
-            // Direction is overwritten in Emit() with the world-space projectile
-            // direction. HitSpark has no rotation, so local space == world space
-            // and the vector feeds straight through with no LookingAt transform.
-            Direction = Vector3.Forward,
+            // _projectileDir is assigned before AddChild() so it's valid here.
+            // Setting Direction at material-creation time avoids a GPU command
+            // ordering race: if set in Emit() just before Emitting=true, the
+            // renderer may not have received the updated uniform before the
+            // one-shot burst fires.
+            Direction = _projectileDir.LengthSquared() > 0.01f ? _projectileDir : Vector3.Forward,
             Spread = 90f,
             Gravity = Vector3.Zero,        // VACUUM — no gravity, no drag
             InitialVelocityMin = SpeedMinMs,
