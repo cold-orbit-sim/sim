@@ -59,6 +59,8 @@ public partial class PlayerShip : RigidBody3D, IDamageable
     [Export] public NodePath PlanetPath { get; set; } = new NodePath();
 
     private bool _helpVisible = false;
+    private int _selectedMissileTubeIndex = 0;
+    private static readonly string[] MissileTubeIds = { "fore_port", "fore_starboard", "aft_port", "aft_starboard" };
     private float _propellantMix = 0f;       // 0 = Economy, 1 = Power
     private float _engineTemp = 0f;          // deg C, 0-1000
     private bool _propulsionOverheated = false;
@@ -155,7 +157,18 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         "-----------------------\n" +
         "Space        Fire (held) — all armed + locked turrets\n" +
         "T / G        Reload: dorsal / ventral\n" +
-        "             (R/F are taken by RCS strafe — placeholder keys)";
+        "             (R/F are taken by RCS strafe — placeholder keys)\n" +
+        "\n" +
+        "Missiles (selected tube)\n" +
+        "------------------------\n" +
+        "I / K        Select tube prev / next\n" +
+        "             (fore_port → fore_stbd → aft_port → aft_stbd)\n" +
+        "U            Arm / disarm selected tube\n" +
+        "Y            Cycle missile type\n" +
+        "H            Load selected tube (also reloads after firing)\n" +
+        "J            Cycle target\n" +
+        "N            Lock (initiate acquisition timer)\n" +
+        "M            Fire missile";
 
     public override void _Ready()
     {
@@ -203,6 +216,14 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         // a deviation flagged in the batch 26 handback, not a silent resolution.
         RegisterKeyAction("turret_reload_dorsal", Key.T);
         RegisterKeyAction("turret_reload_ventral", Key.G);
+        RegisterKeyAction("missile_tube_prev",   Key.I);
+        RegisterKeyAction("missile_tube_next",   Key.K);
+        RegisterKeyAction("missile_arm",         Key.U);
+        RegisterKeyAction("missile_type_cycle",  Key.Y);
+        RegisterKeyAction("missile_load",        Key.H);
+        RegisterKeyAction("missile_target_cycle", Key.J);
+        RegisterKeyAction("missile_lock",        Key.N);
+        RegisterKeyAction("missile_fire",        Key.M);
 
         if (!DebugLabelPath.IsEmpty)
         {
@@ -265,6 +286,7 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         HandleFtl(dt);
         HandleCollision(dt);
         HandleTurretFireInput();
+        HandleMissileInput();
         UpdateDebugLabel();
         PublishTelemetry(dt);
         PublishMqttState();          // immediate: alerts only
@@ -355,6 +377,51 @@ public partial class PlayerShip : RigidBody3D, IDamageable
             PublishButtonStateQos1("coldorbit/input/turrets/dorsal/reload", 1);
         if (Input.IsActionJustPressed("turret_reload_ventral"))
             PublishButtonStateQos1("coldorbit/input/turrets/ventral/reload", 1);
+    }
+
+    // Placeholder keyboard input for missile fire sequence (batch 33). Same
+    // MQTT-via-keyboard pattern as turret reload — each key publishes to the
+    // real missile input topic so the path is identical to hardware input.
+    //
+    // I/K cycle the "selected tube" (local selection, no MQTT topic). All other
+    // keys publish to the selected tube's input topic.
+    //
+    // Target cycle sends a direction payload matching the turret target_cycle
+    // format; all other commands send a {"state":1} button-press payload.
+    private void HandleMissileInput()
+    {
+        if (Input.IsActionJustPressed("missile_tube_prev"))
+            _selectedMissileTubeIndex = (_selectedMissileTubeIndex - 1 + MissileTubeIds.Length) % MissileTubeIds.Length;
+        if (Input.IsActionJustPressed("missile_tube_next"))
+            _selectedMissileTubeIndex = (_selectedMissileTubeIndex + 1) % MissileTubeIds.Length;
+
+        string tube = MissileTubeIds[_selectedMissileTubeIndex];
+
+        if (Input.IsActionJustPressed("missile_arm"))
+        {
+            var s = SimBus.Instance.GetMissile(tube);
+            int newState = (s != null && !s.Armed) ? 1 : 0; // toggle: press = flip armed state
+            PublishButtonStateQos1($"coldorbit/input/missiles/{tube}/arm", newState);
+        }
+        if (Input.IsActionJustPressed("missile_type_cycle"))
+            PublishButtonStateQos1($"coldorbit/input/missiles/{tube}/type_cycle", 1);
+        if (Input.IsActionJustPressed("missile_load"))
+            PublishButtonStateQos1($"coldorbit/input/missiles/{tube}/load", 1);
+        if (Input.IsActionJustPressed("missile_target_cycle"))
+        {
+            // target_cycle uses {"direction": N}, not {"state": N} — same as turret target_cycle.
+            var mqtt = SimBus.Instance?.Mqtt;
+            if (mqtt != null)
+            {
+                string payload = JsonSerializer.Serialize(new { direction = 1 });
+                mqtt.Publish($"coldorbit/input/missiles/{tube}/target_cycle", payload,
+                    MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce, retain: false);
+            }
+        }
+        if (Input.IsActionJustPressed("missile_lock"))
+            PublishButtonStateQos1($"coldorbit/input/missiles/{tube}/lock", 1);
+        if (Input.IsActionJustPressed("missile_fire"))
+            PublishButtonStateQos1($"coldorbit/input/missiles/{tube}/fire", 1);
     }
 
     // IDamageable — routes a weapon hit into the same subsystem damage
@@ -858,6 +925,11 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         PublishFtlState(mqtt);
         PublishTurretState(mqtt, "dorsal");
         PublishTurretState(mqtt, "ventral");
+        var simBus = SimBus.Instance;
+        SimBus.Instance.PublishMissileState(simBus.MissileForePort);
+        SimBus.Instance.PublishMissileState(simBus.MissileForeStarboard);
+        SimBus.Instance.PublishMissileState(simBus.MissileAftPort);
+        SimBus.Instance.PublishMissileState(simBus.MissileAftStarboard);
 
         if (_engineeringNeedsPublish)
         {

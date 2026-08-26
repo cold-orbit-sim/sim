@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace ColdOrbit.SimCore;
@@ -406,6 +407,14 @@ public partial class ShipMesh : Node3D
 
         SyncTurretWithSimBus(_turretDorsal, SimBus.Instance?.TurretDorsal);
         SyncTurretWithSimBus(_turretVentral, SimBus.Instance?.TurretVentral);
+
+        if (SimBus.Instance != null)
+        {
+            SyncMissileWithSimBus(SimBus.Instance.MissileForePort,      (float)delta);
+            SyncMissileWithSimBus(SimBus.Instance.MissileForeStarboard, (float)delta);
+            SyncMissileWithSimBus(SimBus.Instance.MissileAftPort,       (float)delta);
+            SyncMissileWithSimBus(SimBus.Instance.MissileAftStarboard,  (float)delta);
+        }
     }
 
     // Two-way bridge between a TurretController (pure mechanism, no SimBus
@@ -496,5 +505,198 @@ public partial class ShipMesh : Node3D
         if (tempC < 750f) return c600.Lerp(c750,  Mathf.InverseLerp(600f, 750f,  tempC));
         if (tempC < 900f) return c750.Lerp(c900,  Mathf.InverseLerp(750f, 900f,  tempC));
         return c900.Lerp(c1000, Mathf.Clamp(Mathf.InverseLerp(900f, 1000f, tempC), 0f, 1f));
+    }
+
+    // ── Missile system ────────────────────────────────────────────────────────
+
+    // Per-type specs: impulse (N), turn rate (°/s), non-lethal flag.
+    // Impulse formula: damage_hp = impulseN / DamageScaleN (50 000) → same path as turret ammo.
+    // EMP Burst is non-lethal: bypasses hull's 60% share, hits subsystems only, reactor excluded.
+    // Fragmentation blast radius is wider (future splash) but per-hit damage is lower.
+    // Armour Piercing hits harder; "piercing" framing is thin until an armour system exists.
+    // All values are first-pass tuning, not final balance.
+    private static readonly Dictionary<string, (float impulseN, float turnRateDegPerSec, bool nonLethal)> MissileTypeTable = new()
+    {
+        ["Seeking"]          = (200_000f, 120f, false),
+        ["EMP Burst"]        = (150_000f,  90f, true),
+        ["Fragmentation"]    = (100_000f, 100f, false),
+        ["Armour Piercing"]  = (400_000f, 130f, false),
+    };
+
+    // Tube positions in PlayerShip local space (−Z = forward, +X = starboard, +Y = up).
+    // Approximate — tune in editor once hull geometry is measured.
+    private static readonly Dictionary<string, Vector3> TubeLocalOffsets = new()
+    {
+        ["fore_port"]       = new Vector3(-1f, 0f, -4f),
+        ["fore_starboard"]  = new Vector3( 1f, 0f, -4f),
+        ["aft_port"]        = new Vector3(-1f, 0f,  4f),
+        ["aft_starboard"]   = new Vector3( 1f, 0f,  4f),
+    };
+
+    // Updates one missile tube's state machine each frame and spawns missiles on fire.
+    // Handles: type advance, load/reload, target cycle, lock acquisition timer, fire.
+    private void SyncMissileWithSimBus(SimBus.MissileState state, float dt)
+    {
+        if (state == null) return;
+
+        bool changed = false;
+
+        // Type advance: armed only (prevents mid-flight type change, though tube is
+        // empty after fire anyway).
+        if (state.PendingTypeAdvance)
+        {
+            state.PendingTypeAdvance = false;
+            if (state.Armed) { state.AdvanceType(); changed = true; }
+        }
+
+        // Load / reload: Load IS the reload action for missiles — tube goes from
+        // empty → loaded. No auto-reload; player must press Load each time.
+        if (state.PendingLoad)
+        {
+            state.PendingLoad = false;
+            if (state.Armed && state.Status == "empty") { state.Status = "loaded"; changed = true; }
+        }
+
+        // Target cycle: scene-tree lookup, same group as turrets.
+        if (state.PendingTargetCycle != 0)
+        {
+            int dir = state.PendingTargetCycle;
+            state.PendingTargetCycle = 0;
+            CycleMissileTarget(state, dir);
+            state.LockState = TurretLockState.None;
+            state.LockTimer = 0f;
+            state.LockProgress = 0f;
+            changed = true;
+        }
+
+        // Lock initiation: starts acquisition timer. Must be armed, loaded, and have
+        // a valid target. Pressing Lock while already acquiring or locked is a no-op.
+        if (state.PendingLock)
+        {
+            state.PendingLock = false;
+            if (state.Armed && state.Status == "loaded"
+                && state.SelectedTarget != null && IsInstanceValid(state.SelectedTarget)
+                && state.LockState == TurretLockState.None)
+            {
+                state.LockState = TurretLockState.Acquiring;
+                state.LockTimer = 0f;
+                changed = true;
+            }
+        }
+
+        // Acquisition timer.
+        if (state.LockState == TurretLockState.Acquiring)
+        {
+            if (state.SelectedTarget == null || !IsInstanceValid(state.SelectedTarget))
+            {
+                state.LockState = TurretLockState.None;
+                state.LockTimer = 0f;
+                changed = true;
+            }
+            else
+            {
+                state.LockTimer += dt;
+                if (state.LockTimer >= SimBus.MissileState.LockDurationS)
+                {
+                    state.LockState = TurretLockState.Locked;
+                    changed = true;
+                }
+            }
+        }
+
+        state.LockProgress = state.LockState switch
+        {
+            TurretLockState.Locked    => 1f,
+            TurretLockState.Acquiring => Mathf.Clamp(state.LockTimer / SimBus.MissileState.LockDurationS, 0f, 1f),
+            _                         => 0f,
+        };
+
+        // Update target telemetry from the live Node3D reference.
+        if (state.SelectedTarget != null && IsInstanceValid(state.SelectedTarget))
+        {
+            var t = state.SelectedTarget as Target;
+            state.TargetName    = t?.TargetDisplayName ?? state.SelectedTarget.Name;
+            state.TargetClass   = t?.TargetClass;
+            state.TargetAlliance = t?.TargetAlliance;
+            state.TargetRangeM  = Mathf.RoundToInt(GlobalPosition.DistanceTo(state.SelectedTarget.GlobalPosition));
+        }
+        else if (state.SelectedTarget != null)
+        {
+            // Target node was freed.
+            state.SelectedTarget = null;
+            state.TargetName = state.TargetClass = state.TargetAlliance = null;
+            state.TargetRangeM = null;
+            if (state.LockState != TurretLockState.None)
+            {
+                state.LockState = TurretLockState.None;
+                state.LockTimer = 0f;
+                state.LockProgress = 0f;
+            }
+            changed = true;
+        }
+
+        // Fire: must be armed, loaded, and locked.
+        if (state.PendingFire)
+        {
+            state.PendingFire = false;
+            if (state.Armed && state.Status == "loaded" && state.LockState == TurretLockState.Locked)
+            {
+                LaunchMissile(state);
+                state.Status = "empty";
+                state.LockState = TurretLockState.None;
+                state.LockTimer = 0f;
+                state.LockProgress = 0f;
+                changed = true;
+            }
+        }
+
+        if (changed) SimBus.Instance.PublishMissileState(state);
+    }
+
+    // Cycles to the next/previous member of the "lockable_targets" group for a
+    // missile tube. Same group and ordering as TurretController.CycleTarget.
+    private void CycleMissileTarget(SimBus.MissileState state, int direction)
+    {
+        var targets = GetTree().GetNodesInGroup("lockable_targets")
+            .OfType<Node3D>().OrderBy(n => n.Name.ToString()).ToList();
+        if (targets.Count == 0) return;
+
+        int cur = state.SelectedTarget != null ? targets.IndexOf(state.SelectedTarget) : -1;
+        int next = cur < 0
+            ? (direction > 0 ? 0 : targets.Count - 1)
+            : (cur + direction + targets.Count) % targets.Count;
+        state.SelectedTarget = targets[next];
+    }
+
+    // Spawns a Missile node and launches it from the tube's approximate position.
+    private void LaunchMissile(SimBus.MissileState state)
+    {
+        if (!MissileTypeTable.TryGetValue(state.MissileType, out var spec))
+        {
+            GD.PrintErr($"ShipMesh: unknown missile type '{state.MissileType}' — launch aborted");
+            return;
+        }
+
+        var ship = SimBus.Instance?.PlayerShipNode;
+        if (ship == null) { GD.PrintErr("ShipMesh: PlayerShipNode null — missile launch aborted"); return; }
+
+        TubeLocalOffsets.TryGetValue(state.TubeId, out Vector3 localOffset);
+        Vector3 launchPos = ship.GlobalTransform * localOffset;
+
+        // Aft tubes kick backward, fore tubes kick forward — missile steers toward target.
+        bool isAft = state.TubeId.StartsWith("aft");
+        Vector3 kickDir = isAft ? ship.GlobalTransform.Basis.Z : -ship.GlobalTransform.Basis.Z;
+        Vector3 initialVel = ship.LinearVelocity + kickDir * 50f;
+
+        var missile = new Missile
+        {
+            ThrustMs2          = 200f,
+            MaxSpeedMs         = 400f,
+            TurnRateDegPerSec  = spec.turnRateDegPerSec,
+            ImpulseEquivalentN = spec.impulseN,
+            NonLethal          = spec.nonLethal,
+        };
+        GetTree().CurrentScene.AddChild(missile);
+        missile.Launch(launchPos, initialVel, state.SelectedTarget);
     }
 }

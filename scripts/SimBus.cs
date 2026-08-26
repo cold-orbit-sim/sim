@@ -45,6 +45,20 @@ public partial class SimBus : Node
         "ventral" => TurretVentral,
         _         => null,
     };
+
+    public MissileState MissileForePort      { get; } = new("fore_port");
+    public MissileState MissileForeStarboard { get; } = new("fore_starboard");
+    public MissileState MissileAftPort       { get; } = new("aft_port");
+    public MissileState MissileAftStarboard  { get; } = new("aft_starboard");
+
+    public MissileState GetMissile(string tubeId) => tubeId switch
+    {
+        "fore_port"       => MissileForePort,
+        "fore_starboard"  => MissileForeStarboard,
+        "aft_port"        => MissileAftPort,
+        "aft_starboard"   => MissileAftStarboard,
+        _                 => null,
+    };
     public MqttTelemetryPublisher Mqtt { get; private set; }
 
     // Set by PlayerShip._Ready from its [Export]. Published retained on every
@@ -120,6 +134,15 @@ public partial class SimBus : Node
         Mqtt.Subscribe("coldorbit/input/turrets/+/arm");
         Mqtt.Subscribe("coldorbit/input/turrets/+/target_cycle");
         Mqtt.Subscribe("coldorbit/input/turrets/+/reload");
+        foreach (var tube in new[] { "fore_port", "fore_starboard", "aft_port", "aft_starboard" })
+        {
+            Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/arm");
+            Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/type_cycle");
+            Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/load");
+            Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/target_cycle");
+            Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/lock");
+            Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/fire");
+        }
         Mqtt.MessageReceived += OnMqttMessageReceived;
         Mqtt.Connected += OnMqttConnected;
 
@@ -173,6 +196,13 @@ public partial class SimBus : Node
         if (topic.StartsWith(turretPrefix, StringComparison.Ordinal))
         {
             HandleTurretInput(topic.Substring(turretPrefix.Length), payload);
+            return;
+        }
+
+        const string missilePrefix = "coldorbit/input/missiles/";
+        if (topic.StartsWith(missilePrefix, StringComparison.Ordinal))
+        {
+            HandleMissileInput(topic.Substring(missilePrefix.Length), payload);
             return;
         }
 
@@ -711,6 +741,116 @@ public partial class SimBus : Node
         }
     }
 
+    // Routes missile input sub-topics: <tube>/arm, <tube>/type_cycle, <tube>/load,
+    // <tube>/target_cycle, <tube>/lock, <tube>/fire.
+    private void HandleMissileInput(string subPath, string payload)
+    {
+        var sep = subPath.IndexOf('/');
+        if (sep < 0)
+        {
+            GD.PrintErr($"SimBus: malformed missile topic: missiles/{subPath}");
+            return;
+        }
+        string tubeId = subPath.Substring(0, sep);
+        string command = subPath.Substring(sep + 1);
+        var state = GetMissile(tubeId);
+        if (state == null)
+        {
+            GD.PrintErr($"SimBus: unknown missile tube '{tubeId}'");
+            return;
+        }
+
+        // target_cycle carries a direction field, not state.
+        if (command == "target_cycle")
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (doc.RootElement.TryGetProperty("direction", out var d))
+                    state.PendingTargetCycle = d.GetInt32();
+            }
+            catch (JsonException ex)
+            {
+                GD.PrintErr($"SimBus: malformed payload on missile {tubeId} target_cycle: {ex.Message}");
+            }
+            return;
+        }
+
+        int stateValue;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            stateValue = doc.RootElement.TryGetProperty("state", out var s) ? s.GetInt32() : -1;
+        }
+        catch (JsonException ex)
+        {
+            GD.PrintErr($"SimBus: malformed payload on missile {tubeId} {command}: {ex.Message}");
+            return;
+        }
+
+        switch (command)
+        {
+            case "arm":
+                // state 0 = disarm, 1 = arm (same as turret arm)
+                state.Armed = stateValue != 0;
+                if (!state.Armed)
+                {
+                    state.LockState = TurretLockState.None;
+                    state.LockTimer = 0f;
+                    state.LockProgress = 0f;
+                }
+                PublishMissileState(state);
+                break;
+            case "type_cycle":
+                if (stateValue != 1) return;
+                state.PendingTypeAdvance = true;
+                break;
+            case "load":
+                if (stateValue != 1) return;
+                state.PendingLoad = true;
+                break;
+            case "lock":
+                if (stateValue != 1) return;
+                state.PendingLock = true;
+                break;
+            case "fire":
+                if (stateValue != 1) return;
+                state.PendingFire = true;
+                break;
+            default:
+                GD.PrintErr($"SimBus: unknown missile command '{command}' on tube {tubeId}");
+                break;
+        }
+    }
+
+    // Publishes the retained state for one missile tube. Called on any state
+    // change (arm, type, load, lock, fire) and on broker reconnect.
+    public void PublishMissileState(MissileState tube)
+    {
+        string lockStateStr = tube.LockState switch
+        {
+            TurretLockState.Acquiring => "acquiring",
+            TurretLockState.Locked    => "locked",
+            _                         => "none",
+        };
+        var payload = JsonSerializer.Serialize(new
+        {
+            tube            = tube.TubeId,
+            armed           = tube.Armed,
+            status          = tube.Status,
+            missile_type    = tube.MissileType,
+            lock_state      = lockStateStr,
+            lock_progress   = MathF.Round(tube.LockProgress, 3),
+            target_name     = tube.TargetName,
+            target_class    = tube.TargetClass,
+            target_alliance = tube.TargetAlliance,
+            target_range_m  = tube.TargetRangeM,
+            updated_at      = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        Mqtt.Publish($"coldorbit/output/missiles/{tube.TubeId}/state", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
     // Sets Acknowledged = true on all active alerts matching the predicate.
     // Called from the MQTT background thread; matches the threading model already
     // established for Alerts.Active access in this class.
@@ -866,7 +1006,8 @@ public partial class SimBus : Node
         // Turret stubs retired (batch 24) — PlayerShip.PublishTurretState now
         // publishes real turret state on the rate-limited telemetry path, and
         // lands within one publish interval of connect.
-        PublishMissileStubs();
+        foreach (var tube in new[] { MissileForePort, MissileForeStarboard, MissileAftPort, MissileAftStarboard })
+            PublishMissileState(tube);
         // Hardpoint stubs retired — real publish happens in OnMqttConnected.
 
         // TEMPORARY: always unlocked so the loadout screen is testable
@@ -938,27 +1079,6 @@ public partial class SimBus : Node
                   vessel_class = "Light Freighter", range_m = 1240 },
         });
         Mqtt.Publish("coldorbit/output/comms/targets", targetsPayload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
-    }
-
-    private void PublishMissileStubs()
-    {
-        // MOCK — §3.1b missiles contract. Replace with real missile state when missile system exists.
-        foreach (var tube in new[] { "fore_port", "fore_starboard", "aft_port", "aft_starboard" })
-        {
-            var payload = JsonSerializer.Serialize(new
-            {
-                tube,
-                armed = false,
-                status = "loaded",
-                missile_type = (string?)"Seeking",
-                lock_state = "none",
-                target_name = (string?)null,
-                target_class = (string?)null,
-                target_alliance = (string?)null,
-                target_range_m = (int?)null,
-            });
-            Mqtt.Publish($"coldorbit/output/missiles/{tube}/state", payload, MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
-        }
     }
 
     // Publishes the current repair queue as an ordered list. Called on broker
@@ -1497,6 +1617,60 @@ public partial class SimBus : Node
         public bool PdEngaged          { get; set; }
         public bool MissileLockWarning { get; set; }  // not set by gameplay yet
         public int  DecoyCount         { get; set; } = 12;
+    }
+
+    // State for one missile tube. Commands written by SimBus.HandleMissileInput
+    // (from MQTT) and PlayerShip keyboard placeholder. Telemetry (lock timer,
+    // target info, status) written by ShipMesh.SyncMissileWithSimBus each frame.
+    // Same pending-field pattern as TurretState.
+    public sealed class MissileState
+    {
+        public string TubeId { get; }
+
+        // Fixed acquisition time — missiles have dedicated targeting hardware,
+        // so lock is faster and not range-scaled unlike turrets.
+        public const float LockDurationS = 1.5f;
+
+        public static readonly string[] TypeSequence =
+            { "Seeking", "EMP Burst", "Fragmentation", "Armour Piercing" };
+
+        // --- Commands: written by MQTT input handlers and keyboard placeholder ---
+        public bool Armed { get; set; } = false;
+        public string MissileType { get; set; } = "Seeking";
+
+        // "loaded" on startup: tube arrives pre-loaded (first shot is immediate).
+        // "empty" after firing — player must press Load to reload.
+        public string Status { get; set; } = "loaded";
+
+        // One-shot pending commands consumed by ShipMesh.SyncMissileWithSimBus.
+        public bool PendingTypeAdvance { get; set; } = false;
+        public bool PendingLoad { get; set; } = false;
+        public bool PendingLock { get; set; } = false;
+        public bool PendingFire { get; set; } = false;
+        public int PendingTargetCycle { get; set; } = 0;
+
+        // --- Telemetry: written by ShipMesh each frame ---
+        public TurretLockState LockState { get; set; } = TurretLockState.None;
+        public float LockProgress { get; set; } = 0f;
+        public float LockTimer { get; set; } = 0f;
+
+        // Scene-tree Node3D reference to the locked target. Set by ShipMesh when
+        // cycling targets; cleared when the node is freed or target changes.
+        public Godot.Node3D SelectedTarget { get; set; } = null;
+        public string TargetName { get; set; } = null;
+        public string TargetClass { get; set; } = null;
+        public string TargetAlliance { get; set; } = null;
+        public int? TargetRangeM { get; set; } = null;
+
+        public MissileState(string tubeId) => TubeId = tubeId;
+
+        // Advances to the next type in the cycle. Safe to call with unknown
+        // current type (falls back to index 0 = "Seeking").
+        public void AdvanceType()
+        {
+            int idx = Array.IndexOf(TypeSequence, MissileType);
+            MissileType = TypeSequence[(idx + 1) % TypeSequence.Length];
+        }
     }
 
     // Immutable alert entry. Id must be stable for the lifetime of a single
