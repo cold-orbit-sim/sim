@@ -541,24 +541,54 @@ public partial class ShipMesh : Node3D
 
         bool changed = false;
 
-        // Type advance: armed only (prevents mid-flight type change, though tube is
-        // empty after fire anyway).
+        // Type advance: behaviour depends on current tube status.
+        //   loaded    → begin unloading; type advances when unload completes.
+        //   loading   → cancel load (nothing physically in tube), advance type immediately.
+        //   empty     → advance type immediately.
+        //   unloading → ignore (already committed to a type change).
         if (state.PendingTypeAdvance)
         {
             state.PendingTypeAdvance = false;
             if (state.Armed)
             {
+                switch (state.Status)
+                {
+                    case "loaded":
+                        state.Status = "unloading";
+                        state.LoadTimer = 0f;
+                        state.LockState = TurretLockState.None;
+                        state.LockProgress = 0f;
+                        changed = true;
+                        break;
+                    case "loading":
+                        state.Status = "empty";
+                        state.LoadTimer = 0f;
+                        state.AdvanceType();
+                        changed = true;
+                        break;
+                    case "empty":
+                        state.AdvanceType();
+                        changed = true;
+                        break;
+                    // "unloading": ignore additional type-cycle presses.
+                }
+            }
+        }
+
+        // Unloading timer: ejects the current missile; advances type on completion.
+        if (state.Status == "unloading")
+        {
+            state.LoadTimer += dt;
+            if (state.LoadTimer >= SimBus.MissileState.LoadDurationS)
+            {
                 state.AdvanceType();
-                // Type change always requires a rearm cycle regardless of current status.
-                state.Status = "loading";
+                state.Status = "empty";
                 state.LoadTimer = 0f;
-                state.LockState = TurretLockState.None;
-                state.LockProgress = 0f;
                 changed = true;
             }
         }
 
-        // Loading timer: ticks while tube is being reloaded after a type change.
+        // Loading timer: ticks while missile is being loaded after Load press.
         if (state.Status == "loading")
         {
             state.LoadTimer += dt;
@@ -570,8 +600,7 @@ public partial class ShipMesh : Node3D
             }
         }
 
-        // Load / reload: tube goes from empty → loading (same timer as type change).
-        // No auto-reload; player must press Load each time.
+        // Load: empty → loading. No-op if not armed or tube is not empty.
         if (state.PendingLoad)
         {
             state.PendingLoad = false;

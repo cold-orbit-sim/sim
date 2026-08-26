@@ -468,6 +468,12 @@ public partial class ControlPanelsWindow : Window
                     p.LoadingBar.Value = Mathf.Clamp(
                         state.LoadTimer / SimBus.MissileState.LoadDurationS * 100f, 0f, 100f);
                     break;
+                case "unloading":
+                    p.StatusLed.Color = LedRed;
+                    p.StatusLabel.Text = "unloading…";
+                    p.LoadingBar.Value = Mathf.Clamp(
+                        (1f - state.LoadTimer / SimBus.MissileState.LoadDurationS) * 100f, 0f, 100f);
+                    break;
                 default: // "empty"
                     p.StatusLed.Color = LedOff;
                     p.StatusLabel.Text = "empty";

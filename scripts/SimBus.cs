@@ -1638,10 +1638,11 @@ public partial class SimBus : Node
         public bool Armed { get; set; } = false;
         public string MissileType { get; set; } = "Seeking";
 
-        // "loaded" on startup: tube arrives pre-loaded (first shot is immediate).
-        // "loading" while a type-change rearm is in progress (timer-gated).
-        // "empty" after firing — player must press Load to reload.
-        public string Status { get; set; } = "loaded";
+        // "empty"    — no missile; press Load to begin loading.
+        // "unloading" — ejecting current missile (type change while loaded).
+        // "loading"  — missile being loaded (timer-gated).
+        // "loaded"   — ready to lock and fire.
+        public string Status { get; set; } = "empty";
 
         // Timer for the "loading" state (type-change rearm wait). Ticked by
         // ShipMesh.SyncMissileWithSimBus; transitions to "loaded" on expiry.
