@@ -69,11 +69,11 @@ public partial class Projectile : Node3D
         var result = spaceState.IntersectRay(query);
         if (result.Count > 0 && result["collider"].As<Node3D>() is Node3D hit)
         {
-            OnHit(hit, (Vector3)result["position"]);
+            OnHit(hit, (Vector3)result["position"], (Vector3)result["normal"]);
         }
     }
 
-    private void OnHit(Node3D hitNode, Vector3 hitPoint)
+    private void OnHit(Node3D hitNode, Vector3 hitPoint, Vector3 hitNormal)
     {
         if (hitNode is IDamageable damageable)
         {
@@ -83,14 +83,7 @@ public partial class Projectile : Node3D
         // nothing happens beyond a visual spark — Target.cs deliberately doesn't
         // implement IDamageable, which is what makes firing-range targets
         // indestructible without any extra guard code.
-        SpawnHitSpark(hitPoint);
+        HitSpark.Spawn(GetParent(), hitPoint);
         QueueFree();
-    }
-
-    private void SpawnHitSpark(Vector3 hitPoint)
-    {
-        // TODO: small one-shot additive particle burst at hitPoint, reusing the
-        // additive-unshaded-material technique from EngineExhaust.cs (batch 22).
-        // Not built this batch — flagged as a visual-polish TODO in the handback.
     }
 }
