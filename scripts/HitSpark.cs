@@ -22,15 +22,14 @@ public partial class HitSpark : Node3D
     private ParticleProcessMaterial _procMat;
     private Vector3 _projectileDir;
 
-    // Called by Projectile.cs. Adds the spark to projectileParent so it survives
-    // the projectile's QueueFree. Position is set after AddChild; direction is
-    // written directly into ParticleProcessMaterial.Direction (world-space, which
-    // equals the node's local space because HitSpark has no rotation applied).
-    // This avoids Basis.LookingAt semantics entirely.
-    public static void Spawn(Node projectileParent, Vector3 worldPos, Vector3 projectileDir)
+    // Called by Projectile.cs. Pass the surface normal from the ray hit so sparks
+    // scatter off the surface (not through it). The normal points away from the
+    // target surface toward the incoming projectile — sparks fan out in that
+    // hemisphere regardless of the angle of incidence.
+    public static void Spawn(Node projectileParent, Vector3 worldPos, Vector3 surfaceNormal)
     {
         var spark = new HitSpark();
-        spark._projectileDir = projectileDir.Normalized();
+        spark._projectileDir = surfaceNormal.Normalized();
         projectileParent.AddChild(spark);   // _Ready builds particles, Emitting = false
         spark.GlobalPosition = worldPos;
         spark.Emit();
