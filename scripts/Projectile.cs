@@ -83,7 +83,7 @@ public partial class Projectile : Node3D
         // nothing happens beyond a visual spark — Target.cs deliberately doesn't
         // implement IDamageable, which is what makes firing-range targets
         // indestructible without any extra guard code.
-        HitSpark.Spawn(GetParent(), hitPoint);
+        HitSpark.Spawn(GetParent(), hitPoint, _direction);
         QueueFree();
     }
 }

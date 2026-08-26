@@ -12,20 +12,39 @@ namespace ColdOrbit.SimCore;
 public partial class HitSpark : Node3D
 {
     // Exposed for tuning in the Remote Inspector during play-test.
-    [Export] public int ParticleCount { get; set; } = 32;
-    [Export] public float LifetimeS { get; set; } = 0.4f;
+    [Export] public int ParticleCount { get; set; } = 64;
+    [Export] public float LifetimeS { get; set; } = 0.22f;
     [Export] public float SpeedMinMs { get; set; } = 60f;
     [Export] public float SpeedMaxMs { get; set; } = 200f;
     [Export] public float ParticleRadiusM { get; set; } = 0.15f;
 
+    private GpuParticles3D _burst;
+
     // Called by Projectile.cs. Adds the spark to projectileParent so it survives
-    // the projectile's QueueFree. GlobalPosition is set before _Ready runs so
-    // the effect appears at the correct world location.
-    public static void Spawn(Node projectileParent, Vector3 worldPos)
+    // the projectile's QueueFree. Position and orientation are set after AddChild
+    // (needs to be in the scene tree for GlobalPosition/GlobalBasis to work),
+    // then Emit() fires the burst.
+    public static void Spawn(Node projectileParent, Vector3 worldPos, Vector3 projectileDir)
     {
         var spark = new HitSpark();
-        projectileParent.AddChild(spark);
+        projectileParent.AddChild(spark);   // _Ready builds particles, Emitting = false
         spark.GlobalPosition = worldPos;
+        // Orient so local +Z points along the projectile's travel direction.
+        // Particles use Spread = 90° (forward hemisphere) so they don't fly back
+        // along the incoming trajectory — they shed forward into the target.
+        if (projectileDir.LengthSquared() > 0.01f)
+        {
+            var up = projectileDir.Abs().IsEqualApprox(Vector3.Up) ? Vector3.Forward : Vector3.Up;
+            spark.GlobalBasis = Basis.LookingAt(projectileDir, up, true);
+        }
+        spark.Emit();
+    }
+
+    public void Emit()
+    {
+        _burst.Emitting = true;
+        var timer = GetTree().CreateTimer(LifetimeS + 0.15);
+        timer.Timeout += QueueFree;
     }
 
     public override void _Ready()
@@ -59,12 +78,11 @@ public partial class HitSpark : Node3D
 
         var procMat = new ParticleProcessMaterial
         {
-            // Full-sphere spread: no orientation logic needed, sparks fly in all
-            // directions from the impact point. At 50–800 m combat range this reads
-            // clearly as a radial impact burst. A tighter hemisphere would need the
-            // surface normal to orient correctly; the full sphere is simpler and
-            // physically reasonable for a fragmentation burst in vacuum.
-            Spread = 180f,
+            // +Z hemisphere: particles fan forward into the target along the
+            // projectile's travel direction. Node is oriented in Spawn() so
+            // local +Z = projectile direction before Emitting is set true.
+            Direction = new Vector3(0f, 0f, 1f),
+            Spread = 90f,
             Gravity = Vector3.Zero,        // VACUUM — no gravity, no drag
             InitialVelocityMin = SpeedMinMs,
             InitialVelocityMax = SpeedMaxMs,
@@ -74,20 +92,16 @@ public partial class HitSpark : Node3D
             ColorRamp = rampTex,
         };
 
-        var burst = new GpuParticles3D
+        _burst = new GpuParticles3D
         {
             Amount = ParticleCount,
             Lifetime = LifetimeS,
             OneShot = true,
             Explosiveness = 1f,   // emit all particles simultaneously — burst, not stream
-            Emitting = true,
+            Emitting = false,     // held until Spawn() sets position/orientation, then calls Emit()
             DrawPass1 = mesh,
             ProcessMaterial = procMat,
         };
-        AddChild(burst);
-
-        // Lifetime + small buffer so all particles fully fade before the node is freed.
-        var timer = GetTree().CreateTimer(LifetimeS + 0.25);
-        timer.Timeout += QueueFree;
+        AddChild(_burst);
     }
 }
