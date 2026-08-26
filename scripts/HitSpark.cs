@@ -81,7 +81,7 @@ public partial class HitSpark : Node3D
             // Negated: Godot's particle shader emits in the -Direction hemisphere
             // (confirmed empirically — forward hemisphere requires the opposite sign).
             Direction = _projectileDir.LengthSquared() > 0.01f ? -_projectileDir : Vector3.Back,
-            Spread = 90f,
+            Spread = 5f,
             Gravity = Vector3.Zero,        // VACUUM — no gravity, no drag
             InitialVelocityMin = SpeedMinMs,
             InitialVelocityMax = SpeedMaxMs,
