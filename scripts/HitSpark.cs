@@ -12,8 +12,8 @@ namespace ColdOrbit.SimCore;
 public partial class HitSpark : Node3D
 {
     // Exposed for tuning in the Remote Inspector during play-test.
-    [Export] public int ParticleCount { get; set; } = 64;
-    [Export] public float LifetimeS { get; set; } = 0.22f;
+    [Export] public int ParticleCount { get; set; } = 80;
+    [Export] public float LifetimeS { get; set; } = 0.12f;
     [Export] public float SpeedMinMs { get; set; } = 60f;
     [Export] public float SpeedMaxMs { get; set; } = 200f;
     [Export] public float ParticleRadiusM { get; set; } = 0.15f;
@@ -65,10 +65,9 @@ public partial class HitSpark : Node3D
         // temperature sequence of a real metal-on-metal impact: bright flash,
         // brief orange glow, gone. No smoke ramp — vacuum.
         var ramp = new Gradient();
-        ramp.SetColor(0, new Color(1f, 1f, 0.9f, 1f));
-        ramp.AddPoint(0.2f, new Color(1f, 0.75f, 0.25f, 0.9f));
-        ramp.AddPoint(0.6f, new Color(0.9f, 0.25f, 0.05f, 0.5f));
-        ramp.AddPoint(1f, new Color(0.3f, 0.05f, 0.0f, 0f));
+        ramp.SetColor(0, new Color(1f, 0.75f, 0.1f, 1f));
+        ramp.AddPoint(0.4f, new Color(1f, 0.45f, 0.05f, 0.9f));
+        ramp.AddPoint(1f, new Color(0.6f, 0.15f, 0.0f, 0f));
         var rampTex = new GradientTexture1D { Gradient = ramp };
 
         _procMat = new ParticleProcessMaterial
@@ -81,7 +80,7 @@ public partial class HitSpark : Node3D
             // Negated: Godot's particle shader emits in the -Direction hemisphere
             // (confirmed empirically — forward hemisphere requires the opposite sign).
             Direction = _projectileDir.LengthSquared() > 0.01f ? -_projectileDir : Vector3.Back,
-            Spread = 5f,
+            Spread = 75f,
             Gravity = Vector3.Zero,        // VACUUM — no gravity, no drag
             InitialVelocityMin = SpeedMinMs,
             InitialVelocityMax = SpeedMaxMs,
