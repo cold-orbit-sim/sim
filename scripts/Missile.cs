@@ -15,7 +15,7 @@ public partial class Missile : Node3D
     public float ThrustMs2 { get; set; } = 200f;
     public float MaxSpeedMs { get; set; } = 400f;
     public float TurnRateDegPerSec { get; set; } = 120f;
-    public float MaxLifetimeS { get; set; } = 15f;
+    public float MaxLifetimeS { get; set; } = 10f;
     public float ImpulseEquivalentN { get; set; } = 200000f;
     public bool NonLethal { get; set; } = false;
     public Color TracerColor { get; set; } = new Color(0.2f, 0.8f, 1.0f); // cyan: distinct from turret slugs

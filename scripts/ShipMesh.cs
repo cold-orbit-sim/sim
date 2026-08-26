@@ -595,14 +595,27 @@ public partial class ShipMesh : Node3D
             changed = true;
         }
 
-        // Lock initiation: starts acquisition timer. Must be armed, loaded, and have
-        // a valid target. Pressing Lock while already acquiring or locked is a no-op.
+        // Break lock if target has left the tube's firing arc, regardless of lock state.
+        if (state.LockState != TurretLockState.None
+            && state.SelectedTarget != null && IsInstanceValid(state.SelectedTarget)
+            && !IsMissileTargetInArc(state))
+        {
+            state.LockState = TurretLockState.None;
+            state.LockTimer = 0f;
+            state.LockProgress = 0f;
+            changed = true;
+        }
+
+        // Lock initiation: starts acquisition timer. Must be armed, loaded, have a
+        // valid target, and target must be in the tube's firing arc.
+        // Pressing Lock while already acquiring or locked is a no-op.
         if (state.PendingLock)
         {
             state.PendingLock = false;
             if (state.Armed && state.Status == "loaded"
                 && state.SelectedTarget != null && IsInstanceValid(state.SelectedTarget)
-                && state.LockState == TurretLockState.None)
+                && state.LockState == TurretLockState.None
+                && IsMissileTargetInArc(state))
             {
                 state.LockState = TurretLockState.Acquiring;
                 state.LockTimer = 0f;
@@ -612,14 +625,15 @@ public partial class ShipMesh : Node3D
             {
                 GD.Print($"[missile {state.TubeId}] lock rejected — armed={state.Armed} " +
                     $"status={state.Status} target={state.SelectedTarget?.Name ?? "null"} " +
-                    $"lockState={state.LockState}");
+                    $"lockState={state.LockState} inArc={IsMissileTargetInArc(state)}");
             }
         }
 
-        // Acquisition timer.
+        // Acquisition timer: cancel if target lost or leaves arc.
         if (state.LockState == TurretLockState.Acquiring)
         {
-            if (state.SelectedTarget == null || !IsInstanceValid(state.SelectedTarget))
+            if (state.SelectedTarget == null || !IsInstanceValid(state.SelectedTarget)
+                || !IsMissileTargetInArc(state))
             {
                 state.LockState = TurretLockState.None;
                 state.LockTimer = 0f;
@@ -683,6 +697,25 @@ public partial class ShipMesh : Node3D
         }
 
         if (changed) SimBus.Instance.PublishMissileState(state);
+    }
+
+    // Returns true when the target is in the tube's firing arc.
+    // Fore tubes require target to be ahead of the ship (forward hemisphere),
+    // aft tubes require target to be behind (aft hemisphere). Threshold = 0
+    // (exactly on the beam breaks lock — intentional, keeps it strict).
+    private bool IsMissileTargetInArc(SimBus.MissileState state)
+    {
+        if (state.SelectedTarget == null || !IsInstanceValid(state.SelectedTarget)) return false;
+        var ship = SimBus.Instance?.PlayerShipNode;
+        if (ship == null) return false;
+
+        // In Godot, -Z is forward and +Z is aft in world space after transform.
+        Vector3 shipForward = -ship.GlobalTransform.Basis.Z;
+        Vector3 toTarget = (state.SelectedTarget.GlobalPosition - ship.GlobalPosition).Normalized();
+        float dot = shipForward.Dot(toTarget);
+
+        bool isFore = state.TubeId.StartsWith("fore");
+        return isFore ? dot > 0f : dot < 0f;
     }
 
     // Cycles to the next/previous member of the "lockable_targets" group for a
