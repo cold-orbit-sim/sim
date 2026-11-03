@@ -18,6 +18,12 @@ public partial class ShipMesh : Node3D
     [Export] public bool ApplyHullShader { get; set; } = true;
     [Export] public bool ApplyEngineExhaust { get; set; } = true;
 
+    // True for the player's ship: _Process mirrors SimBus (engine temp glow,
+    // nozzle glow, turret + missile state). False for NPC ships (EnemyShip) so
+    // they never get driven by the player's panels. Load/hide/turret-attach
+    // logic in _Ready is shared either way.
+    [Export] public bool DrivenBySimBus { get; set; } = true;
+
     private static readonly string[] BridgeNodes = { "bridge", "bridge_dome", "bridge_viewport" };
 
     // One material per glow overlay; updated each _Process frame.
@@ -61,6 +67,10 @@ public partial class ShipMesh : Node3D
         // otherwise the clones are created under the old (non-rotating) parent
         // and stay behind as static ghost turrets when the real one traverses.
         ApplyTurretControllers();
+
+        // NPC ships hand their dorsal turret to the owning EnemyShip (the player's
+        // turrets are reached through SimBus instead — see _Process).
+        if (GetParent() is EnemyShip enemy) enemy.RegisterTurret(_turretDorsal);
 
         BuildGlowOverlays();
         ApplyWeatheredHull();
@@ -359,6 +369,8 @@ public partial class ShipMesh : Node3D
 
     public override void _Process(double delta)
     {
+        if (!DrivenBySimBus) return;
+
         if (_glowMaterials.Count > 0)
         {
             float temp = SimBus.Instance?.Propulsion.EngineTemp ?? 0f;

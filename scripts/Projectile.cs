@@ -19,6 +19,7 @@ public partial class Projectile : Node3D
 
     private Vector3 _direction;
     private float _lifetime = 0f;
+    private Rid _shooterBody;
     private Node3D _excludeShooter; // don't let a turret hit its own ship on spawn frame
 
     public override void _Ready()
@@ -40,6 +41,11 @@ public partial class Projectile : Node3D
         GlobalPosition = origin;
         _direction = (aimPoint - origin).Normalized();
         _excludeShooter = shooter;
+        // Walk up to the shooter's physics body so a ship's own projectiles never
+        // register against its own (now ray-visible) hull.
+        Node n = shooter;
+        while (n != null && n is not CollisionObject3D) n = n.GetParent();
+        if (n is CollisionObject3D body) _shooterBody = body.GetRid();
     }
 
     public override void _PhysicsProcess(double delta)
@@ -63,7 +69,11 @@ public partial class Projectile : Node3D
         // Physics layer 5 ("targets", project.godot layer_names/3d_physics/layer_5)
         // is bit 4 (0-indexed) of the mask -> 1u << 4 = 16. Target.cs's LockVolume
         // is an Area3D on that layer, so both bodies and areas must be queried.
-        query.CollisionMask = 1u << 4;
+        // Layer 6 ("ships", bit 5 -> 32) added for enemy-ship AI pass: PlayerShip and
+        // EnemyShip bodies sit on layers 1+6 so projectiles can hit them. Layer 5
+        // (Target LockVolume) unchanged, so Target.cs stays indestructible.
+        query.CollisionMask = (1u << 4) | (1u << 5);
+        if (_shooterBody.IsValid) query.Exclude = new Godot.Collections.Array<Rid> { _shooterBody };
         query.CollideWithAreas = true;
         query.CollideWithBodies = true;
         var result = spaceState.IntersectRay(query);

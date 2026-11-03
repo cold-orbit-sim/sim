@@ -37,3 +37,4 @@ project/assembly_name="sim-core"
 [layer_names]
 
 3d_physics/layer_5="targets"
+3d_physics/layer_6="ships"

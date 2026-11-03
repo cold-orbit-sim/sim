@@ -301,6 +301,7 @@ public partial class TurretController : Node3D
     private Vector3 GetTargetVelocity(Node3D target)
     {
         if (target is Target debugTarget) return debugTarget.Velocity;
+        if (target is RigidBody3D body) return body.LinearVelocity; // PlayerShip / EnemyShip
         // TODO: future enemy ships should expose velocity the same way (e.g. a
         // shared interface) rather than each turret needing per-type knowledge.
         return Vector3.Zero;
@@ -500,8 +501,8 @@ public partial class TurretController : Node3D
     // Target.cs carries TargetDisplayName/TargetClass/TargetAlliance specifically
     // shaped to match the turret MQTT contract's target_* fields, so they pass
     // straight through with no translation.
-    public string TargetName => _selectedTarget is Target t ? t.TargetDisplayName : null;
-    public string TargetClass => _selectedTarget is Target t ? t.TargetClass : null;
-    public string TargetAlliance => _selectedTarget is Target t ? t.TargetAlliance : null;
+    public string TargetName => _selectedTarget switch { Target t => t.TargetDisplayName, EnemyShip e => e.TargetDisplayName, _ => null };
+    public string TargetClass => _selectedTarget switch { Target t => t.TargetClass, EnemyShip e => e.TargetClass, _ => null };
+    public string TargetAlliance => _selectedTarget switch { Target t => t.TargetAlliance, EnemyShip e => e.TargetAlliance, _ => null };
     public bool HasTarget => _selectedTarget != null;
 }

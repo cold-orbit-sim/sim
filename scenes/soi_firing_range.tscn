@@ -1,7 +1,8 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/SoiFiringRange.cs" id="1"]
 [ext_resource type="PackedScene" path="res://scenes/target.tscn" id="2"]
+[ext_resource type="PackedScene" path="res://scenes/enemy_ship.tscn" id="3"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -76,3 +77,6 @@ IsMoving = true
 MoveAxis = Vector3(0, 0, 1)
 MoveAmplitudeM = 160.0
 MoveSpeed = 0.3
+
+[node name="Enemy-01" parent="." instance=ExtResource("3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 300, 100, -700)
