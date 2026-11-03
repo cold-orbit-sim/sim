@@ -158,6 +158,7 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         "Space        Fire (held) — all armed + locked turrets\n" +
         "T / G        Reload: dorsal / ventral\n" +
         "             (R/F are taken by RCS strafe — placeholder keys)\n" +
+        "L            Toggle fire mode: lethal / non-lethal (both turrets)\n" +
         "\n" +
         "Missiles (selected tube)\n" +
         "------------------------\n" +
@@ -216,6 +217,8 @@ public partial class PlayerShip : RigidBody3D, IDamageable
         // a deviation flagged in the batch 26 handback, not a silent resolution.
         RegisterKeyAction("turret_reload_dorsal", Key.T);
         RegisterKeyAction("turret_reload_ventral", Key.G);
+        // N is taken by missile_lock, so fire-mode toggle uses L (free).
+        RegisterKeyAction("turret_fire_mode_toggle", Key.L);
         RegisterKeyAction("missile_tube_prev",   Key.I);
         RegisterKeyAction("missile_tube_next",   Key.K);
         RegisterKeyAction("missile_arm",         Key.U);
@@ -377,6 +380,14 @@ public partial class PlayerShip : RigidBody3D, IDamageable
             PublishButtonStateQos1("coldorbit/input/turrets/dorsal/reload", 1);
         if (Input.IsActionJustPressed("turret_reload_ventral"))
             PublishButtonStateQos1("coldorbit/input/turrets/ventral/reload", 1);
+
+        // Fire mode: publishes the opposite of the current mode to MQTT. Nothing
+        // is written to TurretState here — SimBus's subscriber does that.
+        if (Input.IsActionJustPressed("turret_fire_mode_toggle"))
+        {
+            string next = SimBus.Instance.TurretDorsal.FireMode == "non_lethal" ? "lethal" : "non_lethal";
+            SimBus.Instance.PublishFireModeInput(next);
+        }
     }
 
     // Placeholder keyboard input for missile fire sequence (batch 33). Same
