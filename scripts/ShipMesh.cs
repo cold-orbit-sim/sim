@@ -424,6 +424,7 @@ public partial class ShipMesh : Node3D
         if (controller == null || state == null) return;
 
         controller.Armed = state.Armed;
+        controller.FireMode = state.FireMode; // read by FireOneRound -> Projectile.NonLethal
 
         if (state.PendingTargetCycle != 0)
         {
