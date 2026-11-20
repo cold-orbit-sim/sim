@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    ignore:
+      # MQTTnet 5.x locked in master plan; major bumps need design review
+      - dependency-name: "MQTTnet"
+        update-types: ["version-update:semver-major"]
+    groups:
+      mstest:
+        patterns:
+          - "MSTest.*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
