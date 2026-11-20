@@ -1,20 +1,22 @@
 version: 2
+
+# One combined PR per week across all ecosystems.
+multi-ecosystem-groups:
+  all:
+    schedule:
+      interval: "weekly"
+
 updates:
   - package-ecosystem: "nuget"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
+    patterns: ["*"]
+    multi-ecosystem-group: "all"
     ignore:
       # MQTTnet 5.x locked in master plan; major bumps need design review
       - dependency-name: "MQTTnet"
         update-types: ["version-update:semver-major"]
-    groups:
-      mstest:
-        patterns:
-          - "MSTest.*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "monthly"
+    patterns: ["*"]
+    multi-ecosystem-group: "all"
