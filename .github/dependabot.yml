@@ -13,6 +13,8 @@ updates:
       mstest:
         patterns:
           - "MSTest.*"
+    reviewers:
+      - Pingue
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -21,3 +23,5 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    reviewers:
+      - Pingue
