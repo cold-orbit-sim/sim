@@ -126,6 +126,7 @@ public partial class ControlPanelsWindow : Window
         public ColorRect ReloadLed;
     }
     private readonly List<TurretPanelState> _turretPanels = new();
+    private CheckButton _fireModeToggle;
 
     // ── Missile panel state (one per tube) ───────────────────────────────
     private sealed class MissilePanelState
@@ -332,12 +333,22 @@ public partial class ControlPanelsWindow : Window
             _turretPanels.Add(p);
         }
 
-        root.AddChild(Labeled("Fire Mode (Single/Burst)", new CheckButton()));
+        // Fire mode (global, both turrets). Publishes to MQTT only; SimBus's
+        // subscriber sets TurretState.FireMode and SyncTurretsFromBus mirrors it
+        // back with SetPressedNoSignal. Replaces the old cosmetic "Single/Burst" placeholder.
+        _fireModeToggle = new CheckButton();
+        _fireModeToggle.Toggled += pressed =>
+            SimBus.Instance.PublishFireModeInput(pressed ? "non_lethal" : "lethal");
+        root.AddChild(Labeled("Non-Lethal Fire Mode", _fireModeToggle));
         return root;
     }
 
     private void SyncTurretsFromBus()
     {
+        var modeSource = SimBus.Instance.GetTurret("dorsal");
+        if (_fireModeToggle != null && modeSource != null)
+            _fireModeToggle.SetPressedNoSignal(modeSource.FireMode == "non_lethal");
+
         foreach (var p in _turretPanels)
         {
             var state = SimBus.Instance.GetTurret(p.TurretId);

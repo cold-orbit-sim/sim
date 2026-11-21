@@ -134,6 +134,8 @@ public partial class SimBus : Node
         Mqtt.Subscribe("coldorbit/input/turrets/+/arm");
         Mqtt.Subscribe("coldorbit/input/turrets/+/target_cycle");
         Mqtt.Subscribe("coldorbit/input/turrets/+/reload");
+        // Global lethal/non_lethal mode switch — no turret id segment, applies to both turrets.
+        Mqtt.Subscribe("coldorbit/input/turrets/fire_mode");
         foreach (var tube in new[] { "fore_port", "fore_starboard", "aft_port", "aft_starboard" })
         {
             Mqtt.Subscribe($"coldorbit/input/missiles/{tube}/arm");
@@ -676,6 +678,32 @@ public partial class SimBus : Node
     // where id is "dorsal" or "ventral" and command is arm|fire|reload|target_cycle.
     private void HandleTurretInput(string subPath, string payload)
     {
+        // Global fire-mode switch: coldorbit/input/turrets/fire_mode, payload
+        // {"mode":"lethal"|"non_lethal"}. No turret id, so it is handled before
+        // the <id>/<command> split and applied to both turrets.
+        if (subPath == "fire_mode")
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                string mode = doc.RootElement.TryGetProperty("mode", out var m) ? m.GetString() : null;
+                if (mode == "lethal" || mode == "non_lethal")
+                {
+                    TurretDorsal.FireMode = mode;
+                    TurretVentral.FireMode = mode;
+                }
+                else
+                {
+                    GD.PrintErr($"SimBus: invalid fire_mode '{mode}' (expected lethal|non_lethal)");
+                }
+            }
+            catch (Exception ex) when (ex is JsonException || ex is InvalidOperationException)
+            {
+                GD.PrintErr($"SimBus: malformed payload on turrets fire_mode: {ex.Message}");
+            }
+            return;
+        }
+
         // subPath = "dorsal/arm" | "dorsal/fire" | etc.
         var parts = subPath.Split('/');
         if (parts.Length != 2)
@@ -1789,6 +1817,21 @@ public partial class SimBus : Node
         Mqtt.Publish("coldorbit/output/comms/targets",
             JsonSerializer.Serialize(contacts),
             MqttQualityOfServiceLevel.AtLeastOnce, retain: true);
+    }
+
+    // Publishes a fire-mode request to the real input topic. Used by the keyboard
+    // placeholder and the control panel; neither writes TurretState directly —
+    // the subscriber in HandleTurretInput does, and the panel mirrors from there.
+    public void PublishFireModeInput(string mode)
+    {
+        if (Mqtt == null) return;
+        string payload = JsonSerializer.Serialize(new
+        {
+            mode,
+            updated_at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+        });
+        Mqtt.Publish("coldorbit/input/turrets/fire_mode", payload,
+            MqttQualityOfServiceLevel.AtLeastOnce, retain: false);
     }
 
     public void PublishAdminOverrideTurret(
